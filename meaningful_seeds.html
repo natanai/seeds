@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Meaningful Seeds — encoder/decoder + presets</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{
+    --bg:#f8fafc;--fg:#0f172a;--card:#ffffff;--muted:#64748b;
+    --ok:#065f46;--okbg:#ecfdf5;--bad:#991b1b;--badbg:#fef2f2;--border:#e2e8f0;
+    --accent:#0ea5e9;
+  }
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px}
+  h1{font-size:24px;margin:0 0 16px}
+  h2{font-size:18px;margin:0 0 8px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  textarea,input,select,button{font:inherit}
+  textarea{width:100%;height:120px;border:1px solid var(--border);border-radius:12px;padding:10px}
+  input[type="text"]{width:100%;border:1px solid var(--border);border-radius:12px;padding:10px}
+  select{border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:white}
+  .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}
+  .enc{border:1px solid var(--border);border-radius:12px;padding:10px;background:#f8fafc}
+  .label{font-size:12px;font-weight:600}
+  .status{font-size:12px;margin-top:6px}
+  .ok{color:var(--ok);background:var(--okbg);border-color:#a7f3d0}
+  .bad{color:var(--bad);background:var(--badbg);border-color:#fecaca}
+  .muted{color:var(--muted)}
+  .pad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;max-width:260px}
+  .key{border:1px solid var(--border);border-radius:14px;padding:14px;background:#f1f5f9;text-align:center;cursor:pointer}
+  .key .k{font-weight:700;font-size:22px;line-height:1}
+  .key .s{font-size:11px;letter-spacing:.15em;color:var(--muted)}
+  .footer{font-size:12px;color:var(--muted);margin-top:20px}
+  .glossary ul{margin:8px 0 0 18px}
+  .glossary li{margin:4px 0}
+  @media (max-width:900px){.row,.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header style="display:flex;align-items:center;gap:16px;justify-content:space-between;flex-wrap:wrap">
+    <h1>Meaningful Seeds — encoder/decoder</h1>
+    <div>
+      <label for="preset" class="muted" style="font-size:13px;font-weight:600;margin-right:8px">Parameters</label>
+      <select id="preset">
+        <option value="none">None</option>
+        <option value="lego">LEGO Odyssey (1..2,147,483,647)</option>
+        <option value="midjourney">Midjourney (0..4,294,967,295)</option>
+        <option value="minecraft">Minecraft (signed 64-bit numeric)</option>
+        <option value="terraria">Terraria (string seeds; identifier)</option>
+        <option value="isaac">Binding of Isaac (8-char seed excl I,O,U,V)</option>
+        <option value="sts">Slay the Spire (alphanumeric, ~8–12)</option>
+        <option value="spelunky2">Spelunky 2 (seeded run code)</option>
+        <option value="deadcells">Dead Cells (6 digits)</option>
+        <option value="factorio">Factorio (0..4,294,967,295)</option>
+      </select>
+    </div>
+  </header>
+
+  <div class="row" style="margin-top:18px">
+    <section class="card">
+      <h2>Keyboard input</h2>
+      <textarea id="text" placeholder="Type text here (letters, digits, spaces)"></textarea>
+      <div class="grid" style="margin-top:10px">
+        <div class="enc">
+          <div class="label" title="Old-phone multi-tap: digit repeated by press count; 0 separates letters on the same key and represents space.">Multi-tap (with 0 separators)</div>
+          <div id="enc-mtap" class="mono"></div>
+          <div id="val-mtap" class="status muted"></div>
+        </div>
+        <div class="enc">
+          <div class="label" title="Two digits per letter: first is keypad (2–9), second is press count (1–4).">Pair code [key][press]</div>
+          <div id="enc-pair" class="mono"></div>
+          <div id="val-pair" class="status muted"></div>
+        </div>
+        <div class="enc">
+          <div class="label" title="Alphabet index concatenated with zero-padding: A=01..Z=26.">A1Z26 fixed (01..26)</div>
+          <div id="enc-a1fixed" class="mono"></div>
+          <div id="val-a1fixed" class="status muted"></div>
+        </div>
+        <div class="enc">
+          <div class="label" title="Alphabet index with separators: e.g., 5-14-2-25.">A1Z26 hyphen</div>
+          <div id="enc-a1hyph" class="mono"></div>
+          <div id="val-a1hyph" class="status muted"></div>
+        </div>
+        <div class="enc">
+          <div class="label" title="Treat alphanumeric text as a base-36 integer (0–9, A–Z→10..35) and show its decimal value.">Base-36 integer</div>
+          <div id="enc-b36" class="mono"></div>
+          <div id="val-b36" class="status muted"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Phone multi-tap pad</h2>
+      <div style="display:flex;gap:10px;align-items:flex-start">
+        <div style="flex:1">
+          <div class="muted" style="font-size:12px;margin-bottom:4px">Output (letters)</div>
+          <div id="phone-letters" class="mono" style="border:1px solid var(--border);border-radius:12px;padding:10px;min-height:42px"></div>
+        </div>
+        <button id="phone-clear" style="border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:#fff;cursor:pointer">Clear</button>
+      </div>
+      <div class="pad" style="margin-top:10px">
+        <!-- keypad -->
+      </div>
+      <div class="grid" style="margin-top:10px">
+        <div class="enc">
+          <div class="label">Multi-tap digits</div>
+          <div id="p-mtap" class="mono"></div>
+          <div id="pval-mtap" class="status muted"></div>
+        </div>
+        <div class="enc">
+          <div class="label">Pair code [key][press]</div>
+          <div id="p-pair" class="mono"></div>
+          <div id="pval-pair" class="status muted"></div>
+        </div>
+        <div class="enc">
+          <div class="label">A1Z26 fixed (01..26)</div>
+          <div id="p-a1fixed" class="mono"></div>
+          <div id="pval-a1fixed" class="status muted"></div>
+        </div>
+        <div class="enc">
+          <div class="label">A1Z26 hyphen</div>
+          <div id="p-a1hyph" class="mono"></div>
+          <div id="pval-a1hyph" class="status muted"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:18px">
+    <h2>Decode any input → try all techniques</h2>
+    <input id="decode-any" type="text" placeholder="Paste digits or tokens (e.g., 336622999 or 5-14-2-25)" />
+    <div class="grid" style="margin-top:10px">
+      <div class="enc" id="dec-mtap-box">
+        <div class="label" title="Digits only; 0 separates letters sharing a key and spaces. No key 1.">Multi-tap (0 as separator)</div>
+        <div id="dec-mtap" class="mono"></div>
+        <div id="dval-mtap" class="status muted"></div>
+      </div>
+      <div class="enc" id="dec-pair-box">
+        <div class="label" title="Even length; pairs of keypad digit then press count (1–4).">Pair code [key][press]</div>
+        <div id="dec-pair" class="mono"></div>
+        <div id="dval-pair" class="status muted"></div>
+      </div>
+      <div class="enc" id="dec-a1h-box">
+        <div class="label" title="Numbers 1..26 separated by non-digits.">A1Z26 hyphenated</div>
+        <div id="dec-a1h" class="mono"></div>
+        <div id="dval-a1h" class="status muted"></div>
+      </div>
+      <div class="enc" id="dec-a1f-box">
+        <div class="label" title="Digits only; two digits per letter (01..26).">A1Z26 fixed (01..26)</div>
+        <div id="dec-a1f" class="mono"></div>
+        <div id="dval-a1f" class="status muted"></div>
+      </div>
+      <div class="enc" id="dec-b36-box">
+        <div class="label" title="Any decimal → base-36 representation string (not original sentence).">Base-36 (decimal → base-36 string)</div>
+        <div id="dec-b36" class="mono"></div>
+        <div id="dval-b36" class="status muted"></div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer glossary">
+    <div><strong>Encoding glossary</strong></div>
+    <ul>
+      <li><strong>Multi-tap</strong>: old phone input; each letter is its keypad digit repeated by press count. Use <span class="mono">0</span> to separate letters on the same key and for spaces.</li>
+      <li><strong>Pair code [key][press]</strong>: two digits per letter, e.g., <span class="mono">C=23</span>, <span class="mono">S=74</span>. No separators needed.</li>
+      <li><strong>A1Z26 fixed</strong>: alphabet index concatenated with zero padding, <span class="mono">A=01</span>.. <span class="mono">Z=26</span>.</li>
+      <li><strong>A1Z26 hyphen</strong>: same mapping but with separators like <span class="mono">5-14-2-25</span>.</li>
+      <li><strong>Base-36</strong>: treats alphanumeric text as a base-36 number. “Decode” shows the base-36 string for a decimal, not your original sentence.</li>
+    </ul>
+  </footer>
+</div>
+
+<script>
+/* Helpers and encoders/decoders/validators are identical to what we built before */
+const MAX_LEGO = 2147483647n;        // 32-bit signed max
+const U32_MAX  = 4294967295n;        // 32-bit unsigned max
+const I64_MIN  = -9223372036854775808n;
+const I64_MAX  =  9223372036854775807n;
+const KEYMAP = {
+  "2": ["A","B","C"], "3": ["D","E","F"], "4": ["G","H","I"],
+  "5": ["J","K","L"], "6": ["M","N","O"],
+  "7": ["P","Q","R","S"], "8": ["T","U","V"], "9": ["W","X","Y","Z"]
+};
+const $ = sel => document.querySelector(sel);
+const setText = (el, val) => { el.textContent = val || "\u00A0"; };
+const onlyDigits = s => /^\d+$/.test(s);
+
+function normalizeLetters(s){ return s.replace(/[^A-Za-z0-9 ]+/g,"").toUpperCase(); }
+function encodeMultiTap(text, sep0=true){
+  const t=normalizeLetters(text); let out="", prev="";
+  for(const ch of t){
+    if(ch===" "){ out+="0"; prev=""; continue; }
+    if(/[0-9]/.test(ch)){ if(sep0 && prev===ch) out+="0"; out+=ch; prev=ch; continue; }
+    const [key, letters] = Object.entries(KEYMAP).find(([,L])=>L.includes(ch))||[];
+    if(!key) continue;
+    if(sep0 && prev===key) out+="0";
+    out+=key.repeat(letters.indexOf(ch)+1); prev=key;
+  }
+  return out.replace(/^0+/, "");
+}
+function flushRun(buf){
+  if(!buf) return "";
+  if(/^[2-9]+$/.test(buf)){
+    const key=buf[0], presses=buf.length, letters=KEYMAP[key];
+    return letters[(presses-1)%letters.length];
+  }
+  if(/^0+$/.test(buf)) return " ";
+  return "";
+}
+function decodeMultiTap(d){
+  const s=(d||"").replace(/[^0-9]/g,""); if(!s) return "";
+  let out="", buf=s[0];
+  for(let i=1;i<s.length;i++){
+    const c=s[i]; if(c==="0"){ out+=flushRun(buf); buf=""; continue; }
+    if(buf[buf.length-1]===c) buf+=c; else { out+=flushRun(buf); buf=c; }
+  }
+  if(buf) out+=flushRun(buf);
+  return out.replace(/\s+/g," ").trim();
+}
+function encodePair(text){
+  const t=normalizeLetters(text); let out="";
+  for(const ch of t){
+    if(!/[A-Z]/.test(ch)) continue;
+    const [key, letters]=Object.entries(KEYMAP).find(([,L])=>L.includes(ch))||[];
+    if(!key) continue;
+    out += key + String( (letters.indexOf(ch)+1) );
+  }
+  return out;
+}
+function decodePair(seq){
+  const s=(seq||"").replace(/[^0-9]/g,""); if(s.length%2!==0||!s) return "";
+  let out="";
+  for(let i=0;i<s.length;i+=2){
+    const key=s[i], press=parseInt(s[i+1],10), letters=KEYMAP[key];
+    if(!letters || press<1 || press>letters.length) return "";
+    out+=letters[press-1];
+  }
+  return out;
+}
+function encodeA1Z26(text){
+  const t=normalizeLetters(text), ns=[];
+  for(const ch of t) if(/[A-Z]/.test(ch)) ns.push(ch.charCodeAt(0)-64);
+  return { fixed: ns.map(n=>String(n).padStart(2,"0")).join(""), hyph: ns.join("-") };
+}
+function decodeA1Fixed(seq){
+  const s=(seq||"").replace(/[^0-9]/g,""); if(!s || s.length%2) return "";
+  let out=""; for(let i=0;i<s.length;i+=2){
+    const n=parseInt(s.slice(i,i+2),10); if(n<1||n>26) return "";
+    out+=String.fromCharCode(64+n);
+  } return out;
+}
+function decodeA1Hyph(seq){
+  const parts=(seq||"").split(/[^0-9]+/).filter(Boolean); if(parts.length===0) return "";
+  let out=""; for(const p of parts){ const n=parseInt(p,10); if(n<1||n>26) return ""; out+=String.fromCharCode(64+n); }
+  return out;
+}
+function encodeBase36(text){
+  const t=normalizeLetters(text).replace(/[^A-Z0-9]/g,""); if(!t) return "";
+  let acc=0n; for(const ch of t){ const v=/[0-9]/.test(ch)? BigInt(parseInt(ch,10)) : BigInt(ch.charCodeAt(0)-55); acc=acc*36n+v; }
+  return acc.toString();
+}
+function decodeBase36(numStr){
+  const s=(numStr||"").replace(/[^0-9]/g,""); if(!s) return "";
+  let n=BigInt(s); if(n===0n) return "0";
+  let out=""; while(n>0n){ const r=Number(n%36n); out=(r<10?String(r):String.fromCharCode(55+r))+out; n/=36n; }
+  return out;
+}
+
+function legoValidity(numStr){
+  if(!numStr) return bad("no number");
+  if(!onlyDigits(numStr)) return bad("contains non-digits");
+  if(numStr.length>10) return bad("more than 10 digits");
+  const n=BigInt(numStr); if(n<1n) return bad("must be ≥ 1");
+  if(n>MAX_LEGO) return bad("exceeds 2,147,483,647");
+  return ok();
+}
+function midjourneyValidity(numStr){
+  if(!numStr) return bad("no number");
+  if(!onlyDigits(numStr)) return bad("non-digits");
+  const n=BigInt(numStr); if(n<0n) return bad("must be ≥ 0");
+  if(n>U32_MAX) return bad("exceeds 4,294,967,295");
+  return ok();
+}
+function factorioValidity(numStr){ return midjourneyValidity(numStr); }
+function minecraftValidity(numStr){
+  if(!numStr) return bad("no number");
+  if(!/^-?\d+$/.test(numStr)) return bad("not a signed integer");
+  try{
+    const n=BigInt(numStr);
+    if(n<I64_MIN || n>I64_MAX) return bad("outside signed 64-bit range");
+  }catch{ return bad("not parseable"); }
+  return ok("numeric seeds only; note Minecraft also accepts string seeds (hashed to 32-bit)");
+}
+function terrariaValidity(anyStr){
+  if(!anyStr || /^\s*$/.test(anyStr)) return bad("empty");
+  return ok("string seeds allowed; identifier is part of world seed");
+}
+function isaacValidity(anyStr){
+  const s=(anyStr||"").replace(/\s+/g,"").toUpperCase();
+  if(s.length!==8) return bad("must be 8 characters");
+  if(!/^[A-Z0-9]+$/.test(s)) return bad("alphanumeric only");
+  if(/[IOUV]/.test(s)) return bad("disallows I,O,U,V");
+  return ok();
+}
+function stsValidity(anyStr){
+  const s=(anyStr||"").replace(/\s+/g,"").toUpperCase();
+  if(!/^[A-Z0-9]+$/.test(s)) return bad("alphanumeric only");
+  if(s.length<8 || s.length>16) return bad("length ~8–12 expected");
+  return ok();
+}
+function spelunky2Validity(anyStr){
+  const s=(anyStr||"").replace(/\s+/g,"").toUpperCase();
+  if(!/^[A-Z0-9]+$/.test(s)) return bad("alphanumeric only");
+  if(s.length<6 || s.length>12) return bad("length looks off");
+  return ok("Seeded Run codes; enter in-game");
+}
+function deadcellsValidity(numStr){
+  if(!numStr) return bad("no number");
+  if(!onlyDigits(numStr)) return bad("digits only");
+  if(numStr.length!==6) return bad("must be 6 digits");
+  return ok();
+}
+
+function ok(msg){ return {ok:true, reason: msg||""}; }
+function bad(r){ return {ok:false, reason:r}; }
+
+const PRESETS = {
+  none:      { label:"None",                            expects:"any",  validate: ()=>ok() },
+  lego:      { label:"LEGO Odyssey",                    expects:"digit",validate: legoValidity },
+  midjourney:{ label:"Midjourney",                      expects:"digit",validate: midjourneyValidity },
+  minecraft: { label:"Minecraft (numeric)",             expects:"signed",validate: minecraftValidity },
+  terraria:  { label:"Terraria (string)",               expects:"string",validate: terrariaValidity },
+  isaac:     { label:"Binding of Isaac (8-char)",       expects:"string",validate: isaacValidity },
+  sts:       { label:"Slay the Spire",                  expects:"string",validate: stsValidity },
+  spelunky2: { label:"Spelunky 2",                      expects:"string",validate: spelunky2Validity },
+  deadcells: { label:"Dead Cells (6 digits)",           expects:"digit", validate: deadcellsValidity },
+  factorio:  { label:"Factorio (u32)",                  expects:"digit", validate: factorioValidity }
+};
+
+const textEl = $("#text");
+const presetEl = $("#preset");
+const out = {
+  mtap: $("#enc-mtap"), pair: $("#enc-pair"),
+  a1fixed: $("#enc-a1fixed"), a1hyph: $("#enc-a1hyph"),
+  b36: $("#enc-b36")
+};
+const val = {
+  mtap: $("#val-mtap"), pair: $("#val-pair"),
+  a1fixed: $("#val-a1fixed"), a1hyph: $("#val-a1hyph"),
+  b36: $("#val-b36")
+};
+const phoneLetters = $("#phone-letters");
+const phoneClear = $("#phone-clear");
+const pad = document.querySelector(".pad");
+const pout = {
+  mtap: $("#p-mtap"), pair: $("#p-pair"),
+  a1fixed: $("#p-a1fixed"), a1hyph: $("#p-a1hyph")
+};
+const pval = {
+  mtap: $("#pval-mtap"), pair: $("#pval-pair"),
+  a1fixed: $("#pval-a1fixed"), a1hyph: $("#pval-a1hyph")
+};
+const decInput = $("#decode-any");
+const d = {
+  mtap: $("#dec-mtap"), pair: $("#dec-pair"), a1h: $("#dec-a1h"), a1f: $("#dec-a1f"), b36: $("#dec-b36")
+};
+const dval = {
+  mtap: $("#dval-mtap"), pair: $("#dval-pair"), a1h: $("#dval-a1h"), a1f: $("#dval-a1f"), b36: $("#dval-b36")
+};
+const dbox = {
+  mtap: $("#dec-mtap-box"), pair: $("#dec-pair-box"),
+  a1h: $("#dec-a1h-box"), a1f: $("#dec-a1f-box"), b36: $("#dec-b36-box")
+};
+
+function updateEncoders(){
+  const t = textEl.value || "";
+  const mt = encodeMultiTap(t,true);
+  const pr = encodePair(t);
+  const a1 = encodeA1Z26(t);
+  const b36 = encodeBase36(t);
+  setText(out.mtap, mt);
+  setText(out.pair, pr);
+  setText(out.a1fixed, a1.fixed);
+  setText(out.a1hyph, a1.hyph);
+  setText(out.b36, b36);
+  runPresetValidation(mt, val.mtap, "digit");
+  runPresetValidation(pr, val.pair, "digit");
+  runPresetValidation(a1.fixed, val.a1fixed, "digit");
+  runPresetValidation(a1.hyph, val.a1hyph, "string");
+  runPresetValidation(b36, val.b36, "digit");
+}
+function runPresetValidation(value, labelEl, kind){
+  const preset = PRESETS[presetEl.value];
+  const isDigits = /^\d+$/.test(value);
+  const isString = !/^\d+$/.test(value);
+  let applicable = true;
+  if(preset.expects==="digit" && !isDigits) applicable=false;
+  if(preset.expects==="string" && !isString) applicable=false;
+  if(preset.expects==="signed" && !/^-?\d+$/.test(value)) applicable=false;
+  labelEl.classList.remove("ok","bad","muted");
+  if(!value){
+    labelEl.textContent = "(empty)";
+    labelEl.classList.add("muted");
+    return;
+  }
+  if(!applicable){
+    labelEl.textContent = "Not applicable for this preset";
+    labelEl.classList.add("muted");
+    return;
+  }
+  const res = preset.validate(value);
+  if(res.ok){
+    labelEl.textContent = res.reason ? `OK — ${res.reason}` : "OK";
+    labelEl.classList.add("ok");
+  }else{
+    labelEl.textContent = `Invalid: ${res.reason||"rule failed"}`;
+    labelEl.classList.add("bad");
+  }
+}
+function buildKeypad(){
+  const layout = [
+    {k:"1", s:""}, {k:"2", s:"ABC"}, {k:"3", s:"DEF"},
+    {k:"4", s:"GHI"}, {k:"5", s:"JKL"}, {k:"6", s:"MNO"},
+    {k:"7", s:"PQRS"}, {k:"8", s:"TUV"}, {k:"9", s:"WXYZ"},
+    {k:"*", s:""}, {k:"0", s:"space"}, {k:"#", s:""}
+  ];
+  for(const {k,s} of layout){
+    const b=document.createElement("div");
+    b.className="key";
+    b.innerHTML = `<div class="k">${k}</div><div class="s">${s}</div>`;
+    b.onclick = ()=>pressKey(k);
+    pad.appendChild(b);
+  }
+}
+let phoneText="";
+function pressKey(k){
+  if(k==="0"){ if(!phoneText.endsWith(" ")) phoneText+=" "; renderPhone(); return; }
+  if(!/[2-9]/.test(k)) return;
+  const letters = KEYMAP[k];
+  const last = phoneText.slice(-1);
+  if(!last || last===" "){
+    phoneText += letters[0];
+  }else{
+    const prevKey = Object.entries(KEYMAP).find(([,arr])=>arr.includes(last))?.[0];
+    if(prevKey===k){
+      const idx = letters.indexOf(last);
+      phoneText = phoneText.slice(0,-1) + letters[(idx+1)%letters.length];
+    }else{
+      phoneText += letters[0];
+    }
+  }
+  renderPhone();
+}
+function renderPhone(){
+  phoneLetters.textContent = phoneText || "\u00A0";
+  const mt = encodeMultiTap(phoneText,true);
+  const pr = encodePair(phoneText);
+  const a1 = encodeA1Z26(phoneText);
+  setText(pout.mtap, mt); setText(pout.pair, pr);
+  setText(pout.a1fixed, a1.fixed); setText(pout.a1hyph, a1.hyph);
+  runPresetValidation(mt, pval.mtap, "digit");
+  runPresetValidation(pr, pval.pair, "digit");
+  runPresetValidation(a1.fixed, pval.a1fixed, "digit");
+  runPresetValidation(a1.hyph, pval.a1hyph, "string");
+}
+function updateUniversal(){
+  const s = decInput.value || "";
+  const dm = decodeMultiTap(s);
+  const dp = decodePair(s);
+  const dh = decodeA1Hyph(s);
+  const df = decodeA1Fixed(s);
+  const db = decodeBase36(s);
+  setText(d.mtap, dm); setText(d.pair, dp); setText(d.a1h, dh); setText(d.a1f, df); setText(d.b36, db);
+  setDecodeStatus("mtap", validateMultiTapTry(s, dm));
+  setDecodeStatus("pair", validatePairTry(s, dp));
+  setDecodeStatus("a1h", validateA1HyphTry(s, dh));
+  setDecodeStatus("a1f", validateA1FixedTry(s, df));
+  setDecodeStatus("b36", validateB36Try(s, db));
+}
+function setDecodeStatus(kind, res){
+  const el = dval[kind], box = dbox[kind];
+  el.classList.remove("ok","bad","muted"); box.classList.remove("ok","bad");
+  if(res.ok){ el.textContent = "OK"; el.classList.add("ok"); box.classList.add("ok"); }
+  else { el.textContent = `Invalid: ${res.reason}`; el.classList.add("bad"); box.classList.add("bad"); }
+}
+function validateMultiTapTry(inp, decoded){
+  const s=(inp||"").replace(/[^0-9]/g,"");
+  if(!s) return bad("empty");
+  if(/[^0-9]/.test(inp)) return bad("non-digits present");
+  if(/1/.test(s)) return bad("contains 1 (no letters on key 1)");
+  if(s.startsWith("0")) return bad("starts with separator 0");
+  const re = encodeMultiTap(decoded,true);
+  return (re===s)? ok() : bad("round-trip mismatch");
+}
+function validatePairTry(inp, decoded){
+  const s=(inp||"").replace(/[^0-9]/g,"");
+  if(!s) return bad("empty");
+  if(s.length%2!==0) return bad("odd length");
+  for(let i=0;i<s.length;i+=2){
+    const key=s[i], press=parseInt(s[i+1],10), letters=KEYMAP[key];
+    if(!letters) return bad(`invalid key ${key}`);
+    if(!(press>=1 && press<=letters.length)) return bad(`press ${press} invalid for key ${key}`);
+  }
+  const re = encodePair(decoded);
+  return (re===s)? ok() : bad("round-trip mismatch");
+}
+function validateA1HyphTry(inp, decoded){
+  const parts=(inp||"").split(/[^0-9]+/).filter(Boolean);
+  if(parts.length===0) return bad("no numbers");
+  for(const p of parts){ const n=parseInt(p,10); if(!(n>=1 && n<=26)) return bad(`token ${p} out of 1..26`); }
+  return decoded? ok() : bad("failed to decode");
+}
+function validateA1FixedTry(inp, decoded){
+  const s=(inp||"").replace(/[^0-9]/g,"");
+  if(!s) return bad("empty");
+  if(s.length%2!==0) return bad("length not even");
+  for(let i=0;i<s.length;i+=2){
+    const n=parseInt(s.slice(i,i+2),10);
+    if(!(n>=1 && n<=26)) return bad(`pair ${s.slice(i,i+2)} out of 01..26`);
+  }
+  return decoded? ok() : bad("failed to decode");
+}
+function validateB36Try(inp, decoded){
+  const s=(inp||"").replace(/[^0-9]/g,"");
+  if(!s) return bad("empty");
+  if(!onlyDigits(s)) return bad("non-digits");
+  return ok("shows base-36 string, not original text");
+}
+
+textEl.addEventListener("input", updateEncoders);
+presetEl.addEventListener("change", ()=>{ updateEncoders(); renderPhone(); updateUniversal(); });
+decInput.addEventListener("input", updateUniversal);
+phoneClear.addEventListener("click", ()=>{ phoneText=""; renderPhone(); });
+buildKeypad();
+updateEncoders();
+renderPhone();
+updateUniversal();
+
+console.assert(encodeMultiTap("ENBY")==="336622999","multi ENBY");
+console.assert(decodeMultiTap("336622999")==="ENBY","multi decode ENBY");
+console.assert(encodePair("ENBY")==="32622293","pair ENBY");
+console.assert(decodePair("32622293")==="ENBY","pair decode ENBY");
+const a=encodeA1Z26("ENBY");
+console.assert(a.fixed==="05140225","A1 fixed ENBY");
+console.assert(decodeA1Fixed("05140225")==="ENBY","A1 fixed dec");
+console.assert(decodeA1Hyph("5-14-2-25")==="ENBY","A1 hyph dec");
+console.assert(legoValidity("2147483647").ok,"LEGO max ok");
+console.assert(!legoValidity("2147483648").ok,">LEGO max bad");
+console.assert(midjourneyValidity("4294967295").ok,"MJ max ok");
+console.assert(!midjourneyValidity("4294967296").ok,">MJ max bad");
+console.assert(minecraftValidity("-9223372036854775808").ok,"I64 min ok");
+console.assert(!minecraftValidity("9223372036854775808").ok,">I64 max bad");
+console.assert(deadcellsValidity("123456").ok,"Dead Cells 6 digits ok");
+</script>
+</body>
+</html>
