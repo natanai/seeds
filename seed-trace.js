@@ -26,8 +26,10 @@ const SeedTrace = (() => {
         ["Digits written in base " + alphabet.length, digits.join(", ")],
         ["Positional value", digits.map((digit, i) => digit + "×" + alphabet.length + "^" +
           (digits.length - i - 1)).join(" + ") + " = " + (slot.isaac?.token ?? slot.index)],
-        ["Width and prefix", slot.width + " digits, padded on the left" +
-          (slot.prefix ? " after " + quoted(slot.prefix) : "")]
+        slot.minWidth < slot.width
+          ? ["Field width", slot.minWidth + "–" + slot.width + " digits. Encode writes the shortest form."]
+          : ["Field width", slot.width + " digits, padded on the left" +
+            (slot.prefix ? " after " + quoted(slot.prefix) : "")]
       );
     } else {
       rows.push(
@@ -99,6 +101,16 @@ const SeedTrace = (() => {
     ]);
   }
 
+  function packedPages({ slot, text, keyword }, decoding) {
+    const format = slotPage(slot, decoding);
+    format.rows.unshift(decoding
+      ? ["Text rank = game slot + 1", slot.index + " + 1 = " + text.position]
+      : ["Game slot = text rank − 1", text.position + " − 1 = " + slot.index]);
+    const symbols = symbolsPage(text, keyword, decoding);
+    const rank = rankPage(text, decoding);
+    return decoding ? [format, rank, symbols] : [symbols, rank, format];
+  }
+
   function packetPages(trace, decoding) {
     const { slot, lane, capacity, checks, raw, position, number, recipeCount, packet,
       check, expected, limit, text, checkHash } = trace;
@@ -127,7 +139,7 @@ const SeedTrace = (() => {
       "Different recipes, including both orders, can store the same keyword. The order in the recipe tells Decode which way to read.", [
         ["Recover", quoted(trace.keyword)],
         ["Check limit", "A short check can also match an altered seed. " +
-          (lane == null ? "The Valheim prefix announces this format." : "A game number can also be read as an ordinary number or by another method.")]
+          (lane == null ? "Older Valheim seeds used ! to announce this format." : "A game number can also be read as an ordinary number or by another method.")]
       ]);
     return decoding
       ? [format, checkPage, recipe, rank, symbols, certainty]
@@ -195,5 +207,5 @@ const SeedTrace = (() => {
     return [page(method?.label ?? "As typed", rule, rows)];
   }
 
-  return { packetPages, legacyPages, direct, page };
+  return { packedPages, packetPages, legacyPages, direct, page };
 })();

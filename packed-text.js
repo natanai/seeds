@@ -54,10 +54,10 @@ const PackedText = (() => {
   function writeDigits(index, alphabet, width) {
     const base = BigInt(alphabet.length);
     let text = "";
-    for (let offset = 0; offset < width; offset++) {
+    do {
       text = alphabet[Number(index % base)] + text;
       index /= base;
-    }
+    } while (index > 0n || text.length < width);
     return text;
   }
 
@@ -72,13 +72,14 @@ const PackedText = (() => {
     return index;
   }
 
-  function alphabetSpace(alphabet, width, prefix) {
+  function alphabetSpace(alphabet, width, { prefix = "", minWidth = width } = {}) {
     return {
-      alphabet, width, prefix,
+      alphabet, width, prefix, minWidth,
       capacity: BigInt(alphabet.length) ** BigInt(width),
-      write: (index) => prefix + writeDigits(index, alphabet, width),
+      write: (index) => prefix + writeDigits(index, alphabet, minWidth),
       read(seed) {
-        if (seed.length !== width + prefix.length || !seed.startsWith(prefix)) return null;
+        const length = seed.length - prefix.length;
+        if (length < minWidth || length > width || !seed.startsWith(prefix)) return null;
         return readDigits(seed.slice(prefix.length), alphabet);
       }
     };
@@ -124,7 +125,7 @@ const PackedText = (() => {
   const unsigned32 = decimalSpace(0n, U32_MAX);
   const positive31 = decimalSpace(1n, 2147483647n);
   const spaces = {
-    valheim: alphabetSpace(BASE62, 9, "~"),
+    valheim: alphabetSpace(BASE62, 10, { minWidth: 1 }),
     "going-medieval": unsigned32,
     lego: positive31,
     midjourney: unsigned32,
@@ -140,10 +141,12 @@ const PackedText = (() => {
       read: (seed) => readIsaac(seed).index ?? null
     },
     sts: decimalSpace(0n, 999999999999n, 12),
-    spelunky2: alphabetSpace(HEX, 8, ""),
+    spelunky2: alphabetSpace(HEX, 8),
     deadcells: decimalSpace(0n, 999999n, 6),
     factorio: unsigned32
   };
+  const valheimLegacy = alphabetSpace(BASE62, 9, { prefix: "~" });
+  const valheimPacket = alphabetSpace(BASE62, 9, { prefix: "!" });
 
   function hasSpace(game) {
     return Object.hasOwn(spaces, game);
@@ -189,8 +192,8 @@ const PackedText = (() => {
   }
 
   function slotDetails(game, space, index, seed) {
-    const { alphabet, minimum, maximum, width, prefix, capacity } = space;
-    const slot = { alphabet, minimum, maximum, width, prefix, capacity, index, seed };
+    const { alphabet, minimum, maximum, width, prefix, minWidth = width, capacity } = space;
+    const slot = { alphabet, minimum, maximum, width, prefix, minWidth, capacity, index, seed };
     if (game === "isaac") {
       const number = index + 1n;
       const check = isaacChecksum(number);
@@ -199,25 +202,23 @@ const PackedText = (() => {
     return slot;
   }
 
-  function legacyIndex(game, keyword) {
-    const space = spaces[game];
+  function legacyIndex(keyword, capacity) {
     const compact = rank(keyword, 27n, (character) => LOWERCASE.indexOf(character),
-      (space.capacity + 1n) / 3n);
+      (capacity + 1n) / 3n);
     if (compact !== null) return (compact - 1n) * 3n + 1n;
 
     const bytes = encoder.encode(keyword);
-    const full = rank(bytes, 256n, (byte) => byte, space.capacity / 3n);
+    const full = rank(bytes, 256n, (byte) => byte, capacity / 3n);
     return full !== null && decoder.decode(bytes) === keyword ? (full - 1n) * 3n + 2n : null;
   }
 
-  function seedIndex(game, seed) {
-    if (!hasSpace(game)) return null;
-    const space = spaces[game];
+  function seedIndex(space, seed) {
+    if (typeof space?.read !== "function") return null;
     const index = space.read(seed);
     return index !== null && index >= 0n && index < space.capacity ? index : null;
   }
 
-  function decodeLegacySlot(game, index) {
+  function decodeLegacySlot(index, capacity) {
     const tag = index % 3n;
     const digits = unrank(index / 3n + 1n, tag === 1n ? 27n : 256n);
     let keyword;
@@ -228,21 +229,22 @@ const PackedText = (() => {
     } catch {
       return null;
     }
-    return legacyIndex(game, keyword) === index ? keyword : null;
+    return legacyIndex(keyword, capacity) === index ? keyword : null;
   }
 
   function readLegacy(game, seed, trace) {
-    const index = seedIndex(game, seed);
+    const space = game === "valheim" ? valheimLegacy : spaces[game];
+    const index = seedIndex(space, seed);
     if (index === null) return { readings: [] };
     const lane = index % 3n;
-    const slots = (spaces[game].capacity + 2n - lane) / 3n;
+    const slots = (space.capacity + 2n - lane) / 3n;
     if (trace) Object.assign(trace, { lane, slots, weights: OFFSETS,
-      slot: slotDetails(game, spaces[game], index, seed) });
+      slot: slotDetails(game, space, index, seed) });
     if (lane === 0n) return { readings: [], olderCode: game === "valheim" };
     const readings = OFFSETS.flatMap((weight, variant) => {
       const offset = slots * weight / 1000n;
       const original = ((index / 3n + slots - offset) % slots) * 3n + lane;
-      const keyword = decodeLegacySlot(game, original);
+      const keyword = decodeLegacySlot(original, space.capacity);
       if (trace?.variant === variant && keyword) {
         const recipe = { mode: lane === 1n ? "letters" : "text", backward: false };
         Object.assign(trace, { offset, original, keyword, text: textDetails(original / 3n + 1n, recipe) });
@@ -328,22 +330,6 @@ const PackedText = (() => {
       words: mode === "words" ? wordList.length : undefined };
   }
 
-  const valheimPacked = alphabetSpace(BASE62, 9, "!");
-
-  function packetSpace(game) {
-    if (game === "valheim") return valheimPacked;
-    const space = spaces[game];
-    // Keep every sixth position for this format so older packed seeds still decode.
-    return {
-      capacity: (space.capacity + 5n) / 6n,
-      write: (index) => space.write(index * 6n),
-      read(seed) {
-        const index = seedIndex(game, seed);
-        return index !== null && index % 6n === 0n ? index / 6n : null;
-      }
-    };
-  }
-
   function keywordCheck(game, raw, checks, trace) {
     // Preserve the checksum input for existing packed seeds.
     const text = JSON.stringify([game, String(raw), ""]);
@@ -353,37 +339,49 @@ const PackedText = (() => {
     return hash % checks;
   }
 
-  function checkCount(game) {
-    return game === "valheim" ? 127n : 31n;
-  }
-
   function encode(game, keyword) {
     if (!hasSpace(game) || !keyword) return [];
-    const space = packetSpace(game);
-    const checks = checkCount(game);
-    const limit = space.capacity / (recipeCount * checks);
+    const space = spaces[game];
     return recipes.map((recipe, number) => {
       const failure = {};
-      const position = rankedText(keyword, recipe, limit, failure);
-      if (!position) return { ...recipe, number, reason: packingFailure(recipe.mode, failure, limit) };
-      const raw = (position - 1n) * recipeCount + BigInt(number);
-      const packet = raw * checks + keywordCheck(game, raw, checks);
-      return { ...recipe, number, seed: space.write(packet) };
+      const position = rankedText(keyword, recipe, space.capacity, failure);
+      if (!position) return { ...recipe, number, reason: packingFailure(recipe.mode, failure, space.capacity) };
+      return { ...recipe, number, seed: space.write(position - 1n) };
     });
   }
 
+  function readRecipe(position, recipe) {
+    try {
+      return readRank(position, recipe);
+    } catch {
+      // A game value may not be a valid sequence of UTF-8 bytes.
+      return null;
+    }
+  }
+
+  function readVariants(game, seed) {
+    const index = seedIndex(spaces[game], seed);
+    if (index === null) return [];
+    return recipes.flatMap((recipe, number) => {
+      const keyword = readRecipe(index + 1n, recipe);
+      return keyword === null ? [] : [{ ...recipe, number, keyword }];
+    });
+  }
+
+  // Marked and lane-based packets are only read for seeds made by older releases.
   function readPacket(game, seed, trace) {
-    if (!hasSpace(game) || !seed) return null;
     const marked = game === "valheim";
-    const space = packetSpace(game);
-    const packet = space.read(seed);
-    if (packet === null) return null;
-    const checks = checkCount(game);
-    const limit = space.capacity / (recipeCount * checks);
+    const space = marked ? valheimPacket : spaces[game];
+    const index = seedIndex(space, seed);
+    if (index === null || (!marked && index % 6n !== 0n)) return null;
+    const packet = marked ? index : index / 6n;
+    const capacity = marked ? space.capacity : (space.capacity + 5n) / 6n;
+    const checks = marked ? 127n : 31n;
+    const limit = capacity / (recipeCount * checks);
     if (trace) Object.assign(trace, {
-      capacity: space.capacity, checks, recipeCount, limit,
+      capacity, checks, recipeCount, limit,
       lane: marked ? null : 0n,
-      slot: marked ? slotDetails(game, space, packet, seed) : slotDetails(game, spaces[game], packet * 6n, seed)
+      slot: slotDetails(game, space, index, seed)
     });
     const raw = packet / checks;
     const position = raw / recipeCount + 1n;
@@ -393,12 +391,10 @@ const PackedText = (() => {
     const expected = position <= limit ? keywordCheck(game, raw, checks, trace) : null;
     if (trace) Object.assign(trace, { packet, raw, position, number, check, expected });
     if (check === expected) {
-      try {
-        const keyword = readRank(position, recipe);
+      const keyword = readRecipe(position, recipe);
+      if (keyword !== null) {
         if (trace) Object.assign(trace, { keyword, text: textDetails(position, recipe) });
-        return { status: "decoded", keyword, ...recipe };
-      } catch {
-        // An unrelated seed can resemble a packet without containing readable text.
+        return { status: "decoded", keyword, ...recipe, number };
       }
     }
     return marked ? { status: "copy-check" } : null;
@@ -415,13 +411,22 @@ const PackedText = (() => {
   }
 
   function inspect(kind, game, seed, variant) {
+    if (kind === "packed") {
+      const space = spaces[game];
+      const index = seedIndex(space, seed);
+      const recipe = recipes[variant];
+      if (index === null || !recipe) return null;
+      const keyword = readRecipe(index + 1n, recipe);
+      if (keyword === null) return null;
+      return { keyword, text: textDetails(index + 1n, recipe), slot: slotDetails(game, space, index, seed) };
+    }
     const trace = { kind, game, variant };
     if (kind === "packet") readPacket(game, seed, trace);
     if (kind === "legacy") readLegacy(game, seed, trace);
     return trace.slot ? trace : null;
   }
 
-  return { hasSpace, encode, readPacket, readLegacy, isaacSeedError, packetError, inspect };
+  return { hasSpace, encode, readVariants, readPacket, readLegacy, isaacSeedError, packetError, inspect };
 })();
 
 if (typeof module === "object") module.exports = PackedText;

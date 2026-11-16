@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput,
-  translationError, inspectEncodings, FAMILIES } = require("../seed-core.js");
+  translationError, inspectEncodings, inspectDecodings, FAMILIES } = require("../seed-core.js");
 const PackedText = require("../packed-text.js");
 const pack = (game, keyword) => PackedText.encode(game, keyword).filter(({ seed }) => seed);
 const accepts = (game, seed) => PRESETS[game].validate(seed) === "";
@@ -157,16 +157,13 @@ test("look-alikes, casing and reverse put every character back in decoding", () 
   assert.equal(METHODS.lowerLookalikes.decode("34"), "ea");
   assert.equal(METHODS.fixed.decode("0501"), "EA");
 });
-test("packed text produces self-contained seeds within each game’s format", () => {
+test("each packed text variant can be recovered from a valid game seed", () => {
   for (const game of Object.keys(PRESETS).filter(PackedText.hasSpace)) {
     const variants = pack(game, "ab");
     assert.ok(variants.length >= 2, game);
-    assert.equal(new Set(variants.map(({ seed }) => seed)).size, variants.length, game);
     for (const { seed, label } of variants) {
       assert.ok(accepts(game, seed), game);
-      const reading = PackedText.readPacket(game, seed);
-      assert.equal(reading.keyword, "ab", game);
-      assert.equal(reading.label, label, game);
+      assert.ok(PackedText.readVariants(game, seed).some(({ keyword, label: name }) => keyword === "ab" && name === label), game);
     }
     assert.deepEqual(pack(game, "A phrase beyond the capacity of these seed fields 🐾".repeat(3)), []);
   }
@@ -177,9 +174,9 @@ test("the reported Valheim keyword decodes straight from each new seed", () => {
     const variants = pack("valheim", input);
     assert.ok(variants.length >= 2, input);
     assert.deepEqual(variants, pack("valheim", input));
-    for (const { seed } of variants) {
-      assert.equal(seed.length, 10);
-      assert.equal(PackedText.readPacket("valheim", seed).keyword, input);
+    for (const { seed, number } of variants) {
+      assert.match(seed, /^[0-9A-Za-z]{1,10}$/);
+      assert.equal(PackedText.readVariants("valheim", seed).find((entry) => entry.number === number)?.keyword, input);
     }
   }
   assert.deepEqual(PackedText.readLegacy("valheim", "~KY0cTpmgx"), { readings: [], olderCode: true });
@@ -187,7 +184,7 @@ test("the reported Valheim keyword decodes straight from each new seed", () => {
     "loving home");
 });
 
-test("the screenshot seeds expose different stored recipe IDs and preserve the trailing space", () => {
+test("older seeds remain readable alongside current interpretations", () => {
   const backward = PackedText.inspect("packet", "valheim", "!1gd3JFT00");
   const forward = PackedText.inspect("packet", "valheim", "!FOpoZjkTu");
   assert.equal(backward.keyword, "november ");
@@ -203,6 +200,27 @@ test("the screenshot seeds expose different stored recipe IDs and preserve the t
     assert.equal(trace.packet, trace.raw * trace.checks + trace.check);
     assert.equal(trace.packet, trace.slot.index);
   }
+  const marked = inspectDecodings("valheim", "!1gd3JFT00").readings;
+  assert.ok(marked.some(({ id, value }) => id === "packet" && value === "november "));
+  assert.ok(marked.some(({ id, value }) => id === "literal" && value === "!1gd3JFT00"));
+  assert.ok(marked.some(({ method, value }) => method === "reverse" && value === "00TFJ3dg1!"));
+  assert.ok(inspectDecodings("going-medieval", "62964").readings.some(({ id, value }) => id === "packet" && value === "ab"));
+});
+
+test("packed seeds store only the game value and expose conflicting readings", () => {
+  for (const [game, seed] of [["valheim", "u"], ["going-medieval", "56"]]) {
+    const encoding = pack(game, "ab").find(({ label }) => label === "Base 27");
+    assert.equal(encoding.seed, seed);
+    const trace = PackedText.inspect("packed", game, seed, encoding.number);
+    assert.equal(trace.text.position, 57n);
+    assert.equal(trace.slot.index, 56n);
+    const { readings } = inspectDecodings(game, seed);
+    for (const [label, value] of [["As typed", seed], ["Base 27", "ab"], ["Base 27 reversed", "ba"], ["UTF-8", "8"]]) {
+      assert.ok(readings.some((entry) => entry.label === label && entry.value === value), game + "/" + label);
+    }
+  }
+  const hex = inspectDecodings("spelunky2", "00000014").readings;
+  assert.ok(hex.some(({ method, value }) => method === "separated" && value === "N"));
 });
 
 test("packing reports the first rejected symbol or the exact rank that overflows", () => {
@@ -236,11 +254,11 @@ test("encoding families expose valid variants and explain failed attempts", () =
 
   for (const game of Object.keys(PRESETS)) {
     for (const keyword of ["n", "nAt", "A B", "001", "amélie", "loving kindness", long]) {
-      for (const { id, family, value } of inspectEncodings(game, keyword).choices) {
+      for (const { id, family, value, variant } of inspectEncodings(game, keyword).choices) {
         assert.ok(accepts(game, value), game + "/" + id);
         const method = METHODS[id];
         const stored = canonicalSeed(game, value);
-        const reading = family === "packed" ? PackedText.readPacket(game, value)?.keyword
+        const reading = family === "packed" ? PackedText.readVariants(game, value).find(({ number }) => number === variant)?.keyword
           : method ? method.decode(methodInput(game, id, stored)) : stored;
         assert.ok(matchesReading(method, reading, keyword), game + "/" + id);
       }

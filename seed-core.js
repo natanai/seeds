@@ -389,15 +389,6 @@ const SeedTools = (() => {
     return normalization + decoded;
   }
 
-  function valheimReadingConflict(seed, keyword) {
-    const packet = packedSeeds.readPacket("valheim", seed);
-    if (packet?.status === "decoded") {
-      return packet.keyword === keyword ? "" : `The ! prefix makes Decode read ${quotePreview(packet.keyword)} as packed text.`;
-    }
-    if (packet) return packedSeeds.packetError(packedSeeds.inspect("packet", "valheim", seed));
-    return packedSeeds.readLegacy("valheim", seed).olderCode ? "Decode reads this ~ seed as an older hash with no stored keyword." : "";
-  }
-
   function inspectEncodings(game, keyword) {
     const { label: gameName, validate } = PRESETS[game];
     const compatible = new Map(matchingMethods(game));
@@ -423,8 +414,7 @@ const SeedTools = (() => {
         const stored = formatError ? "" : canonicalSeed(game, value);
         const restored = method && stored ? method.decode(methodInput(game, id, stored)) : stored;
         const reason = formatError || (!value || !matchesReading(method, restored, keyword)
-          ? translationError(game, id, keyword, value, stored, restored)
-          : id !== "literal" && game === "valheim" ? valheimReadingConflict(value, keyword) : "");
+          ? translationError(game, id, keyword, value, stored, restored) : "");
         if (reason) failures.push({ id, family, label, reason, attempted: value });
         else choices.push({ id, family, label, value });
       }
@@ -438,7 +428,7 @@ const SeedTools = (() => {
       const id = "packed-" + number;
       const error = reason || validate(seed);
       if (error) failures.push({ id, family: "packed", label, reason: error, attempted: seed });
-      else choices.push({ id, family: "packed", label, value: seed });
+      else choices.push({ id, family: "packed", label, value: seed, variant: number });
     }
     return { choices, failures, disabled };
   }
@@ -450,8 +440,45 @@ const SeedTools = (() => {
     return [...new Set([value, lower, title])];
   }
 
+  function inspectDecodings(game, seed) {
+    const readings = [];
+    if (!seed) return { readings, formatError: "" };
+    const formatError = PRESETS[game].validate(seed);
+    let olderError;
+    if (!formatError) {
+      readings.push({ id: "literal", label: FAMILIES.literal.label, value: seed });
+      for (const { number, label, keyword } of packedSeeds.readVariants(game, seed)) {
+        readings.push({ id: "packed-" + number, kind: "packed", variant: number, label, value: keyword });
+      }
+    }
+    const methods = Object.entries(METHODS);
+    methods.sort(([, left], [, right]) => Number(Boolean(right.reversible)) - Number(Boolean(left.reversible)));
+    for (const [id, method] of methods) {
+      const value = method.decode(methodInput(game, id, seed));
+      if (!value) continue;
+      caseReadings(method, value).forEach((reading, index) => {
+        readings.push({ id: index ? id + "-" + index : id, method: id, label: method.label, value: reading });
+      });
+    }
+    if (!formatError) {
+      const packet = packedSeeds.readPacket(game, seed);
+      if (packet?.status === "decoded") {
+        readings.push({ id: "packet", kind: "packet", label: "Older " + packet.label, value: packet.keyword });
+      } else if (packet) {
+        olderError = packedSeeds.packetError(packedSeeds.inspect("packet", game, seed));
+      }
+      const older = packedSeeds.readLegacy(game, seed);
+      for (const { variant, keyword } of older.readings) {
+        readings.push({ id: "older-" + variant, kind: "legacy", variant,
+          label: "Older packed text " + (variant + 1), value: keyword });
+      }
+      if (older.olderCode) olderError = "The older ~ format stored a hash and discarded the keyword.";
+    }
+    return { readings, formatError, olderError };
+  }
+
   return { KEYMAP, METHODS, FAMILIES, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed,
-    methodInput, normalize, translationError, inspectEncodings };
+    methodInput, normalize, translationError, inspectEncodings, inspectDecodings };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;
