@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { METHODS, PRESETS, makeSeed, seedKey, seedLink } = require("../seed-core.js");
+const { METHODS, PRESETS, matchingMethods, makeSeed, seedKey, seedLink, readSeedLink } =
+  require("../seed-core.js");
+const ForceFit = require("../force-fit.js");
 
 test("the original encodings produce the same decimal seeds", () => {
   const codes = {
@@ -27,23 +29,88 @@ test("decode keeps unambiguous spaces and checks whole numbers", () => {
 
 test("Valheim preserves the original short seed and uses the game's length units", () => {
   const preset = PRESETS.valheim;
-  assert.equal(preset.encode("aB & moss"), "aB & moss");
+  assert.deepEqual(preset.keyword("aB & moss"), { seed: "aB & moss" });
   assert.ok(makeSeed("valheim", "🐾".repeat(5)));
   assert.equal(makeSeed("valheim", "🐾".repeat(6)), null);
   assert.equal(makeSeed("valheim", "a\nb"), null);
-  const long = preset.encode("Moss forest and a cabin");
-  assert.match(long, /^Mos[A-Z0-9]{7}$/);
-  assert.equal(long, preset.encode("Moss forest and a cabin"));
-  assert.ok(makeSeed("valheim", long));
+  const long = preset.keyword("Moss forest and a cabin");
+  assert.match(long.seed, /^Mos[A-Z0-9]{7}$/);
+  assert.deepEqual(long, preset.keyword("Moss forest and a cabin"));
+  assert.ok(makeSeed("valheim", long.seed));
+  assert.deepEqual(preset.keyword("loving home"),
+    { seed: "lov1RQR8G9", prefix: "lov", suffix: "1RQR8G9" });
 });
 
-test("Going Medieval supports unsigned seed values and repeatable phrases", () => {
-  assert.equal(PRESETS["going-medieval"].encode("hello"), "1335831723");
+test("Going Medieval supports unsigned seed values and repeatable keywords", () => {
+  assert.equal(PRESETS["going-medieval"].keyword("hello").seed, "1335831723");
   assert.ok(makeSeed("going-medieval", "0"));
   assert.ok(makeSeed("going-medieval", "4179239274"));
   assert.ok(makeSeed("going-medieval", "4294967295"));
   assert.equal(makeSeed("going-medieval", "4294967296"), null);
   assert.equal(makeSeed("going-medieval", "-1"), null);
+});
+
+test("method choices follow the preset’s seed syntax", () => {
+  for (const game of Object.keys(PRESETS)) {
+    const methods = matchingMethods(game).map(([id]) => id);
+    assert.equal(methods.includes("separated"), ["none", "valheim", "terraria"].includes(game), game);
+    assert.ok(methods.includes("fixed"), game);
+    assert.ok(methods.includes("upperLookalikes"), game);
+    assert.equal(methods.includes("flipCase"),
+      ["none", "valheim", "terraria", "isaac", "sts", "spelunky2"].includes(game), game);
+  }
+});
+
+test("look-alikes, casing and reverse put every character back in decoding", () => {
+  const keyword = "E3  A4 e3 a4! 🐾";
+  assert.equal(METHODS.upperLookalikes.encode("E3"), "3E");
+  assert.equal(METHODS.lowerLookalikes.encode("e3"), "3e");
+  assert.equal(METHODS.flipCase.encode("Moss Home"), "mOSS hOME");
+  assert.equal(METHODS.upperLookalikes.encode("SEAT"), "5347");
+  assert.ok(makeSeed("going-medieval", "5347"));
+  for (const name of ["upperLookalikes", "lowerLookalikes", "flipCase", "reverse", "reverseLookalikes"]) {
+    assert.equal(METHODS[name].decode(METHODS[name].encode(keyword)), keyword, name);
+  }
+  assert.equal(METHODS.upperLookalikes.decode("34"), "EA");
+  assert.equal(METHODS.lowerLookalikes.decode("34"), "ea");
+  assert.equal(METHODS.fixed.decode("0501"), "EA");
+});
+test("Force fit uses each selected game's format and exactly reverses packed keywords", () => {
+  for (const game of Object.keys(PRESETS).filter((game) => game !== "none")) {
+    const packed = ForceFit.encode(game, "ab");
+    assert.equal(packed.kind, "compact", game);
+    assert.ok(makeSeed(game, packed.seed), game);
+    assert.equal(ForceFit.decode(game, packed.seed).keyword, "ab", game);
+
+    const keyword = "From the long road home, Áine & I found another world. 🐾";
+    const hashed = ForceFit.encode(game, keyword);
+    assert.equal(hashed.kind, "hash", game);
+    assert.deepEqual(hashed, ForceFit.encode(game, keyword), game);
+    assert.ok(makeSeed(game, hashed.seed), game);
+    assert.deepEqual(ForceFit.decode(game, hashed.seed), { kind: "hash" }, game);
+  }
+  const packed = ForceFit.encode("valheim", "loving home");
+  assert.equal(packed.seed.length, 10);
+  assert.equal(ForceFit.decode("valheim", packed.seed).keyword, "loving home");
+  for (const keyword of ["É!", "A 🐾", "ab ", "\ufeffa"]) {
+    const encoded = ForceFit.encode("valheim", keyword);
+    assert.equal(ForceFit.decode("valheim", encoded.seed).keyword, keyword);
+  }
+});
+
+test("links and saved records retain the exact keyword even when game seeds collide", () => {
+  const home = "https://natanai.github.io/seeds/";
+  const settings = { terrain: "Marsh", size: "Large" };
+  const keyword = "  Au-delà & 🐾 +# / ".repeat(120) + "\ud800";
+  const record = makeSeed("going-medieval", "4179239274", { ...settings, keyword });
+  const other = makeSeed("going-medieval", record.seed, { ...settings, keyword: keyword.toLowerCase() });
+  const link = seedLink(home, record);
+  assert.notEqual(seedKey(other), seedKey(record));
+  assert.notEqual(seedLink(home, other), link);
+  assert.equal(new URL(link).searchParams.has("keyword"), false);
+  assert.deepEqual(readSeedLink(link, home), record);
+  assert.equal(readSeedLink(link, "https://example.com/seeds/"), null);
+  assert.deepEqual(readSeedLink(home + "?game=valheim&seed=AB", home), { game: "valheim", seed: "AB" });
 });
 
 test("both roll methods return seeds accepted by their game formats", () => {

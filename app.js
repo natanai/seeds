@@ -1,13 +1,16 @@
 "use strict";
 
 (() => {
-  const { KEYMAP, MAP_TYPES, MAP_SIZES, METHODS, PRESETS, makeSeed, seedKey, seedLink } = SeedTools;
+  const {
+    KEYMAP, MAP_TYPES, MAP_SIZES, PRESETS, VALHEIM_LIMIT, matchingMethods,
+    makeSeed, seedKey, seedLink, readSeedLink
+  } = SeedTools;
   const byId = (id) => document.getElementById(id);
   const gameSelect = byId("game");
   const methodSelect = byId("method");
   const terrainSelect = byId("terrain");
   const sizeSelect = byId("map-size");
-  const phraseInput = byId("phrase");
+  const keywordInput = byId("keyword");
   const seedInput = byId("seed-input");
   const resultValue = byId("result-value");
   const resultStatus = byId("result-status");
@@ -47,14 +50,17 @@
 
   let game = validGame(search.get("game") ?? readStorage(gameKey));
   let view = search.has("seed") ? "decode" : "encode";
-  let encodeMethod = PRESETS[game].encode ? "phrase" : "mtap";
-  let decodeMethod = search.has("seed") || game !== "none" ? "game" : "mtap";
+  let recovery = readSeedLink(location.href, location.href);
+  let encodeMethod = PRESETS[game].keyword ? "keyword" : "mtap";
+  let decodeMethod = "game";
   let saved = readSaved();
   let collection = saved.some((entry) => game === "none" || entry.game === game)
     ? "saved" : "examples";
   let libraryIndex = 0;
+  let readingPage = 0;
+  let readingLimit = 0;
   let currentResult = {};
-  let phonePhrase = "";
+  let phoneKeyword = "";
   let pendingKey = "";
   let tapTimer;
 
@@ -80,35 +86,118 @@
     return game === "none" ? "" : "Fits " + PRESETS[game].label + ".";
   }
 
+  function knownKeyword() {
+    return recovery?.game === game && recovery.seed === seedInput.value ? recovery.keyword : undefined;
+  }
+
+  function keywordCandidate(input, preset) {
+    const { seed, prefix, suffix } = preset.keyword(input);
+    const explainHash = "FNV-1a starts at 2166136261. For each UTF-8 byte, XOR it in, " +
+      "multiply by 16777619 and keep the low 32 bits.";
+    const candidate = { id: "keyword", label: "Keyword seed", value: seed, error: "" };
+
+    if (game === "valheim") {
+      const rule = "One line of up to " + VALHEIM_LIMIT + " UTF-16 units goes in as typed. Otherwise keep " +
+        "the first 3 ASCII letters or digits with case intact. Append the full keyword’s FNV-1a hash in " +
+        "uppercase base 36, padded with zeros to 7 characters.";
+      const example = suffix ? input.length + " units → " + (prefix ? prefix + " + " : "") + suffix : "";
+      candidate.hint = input
+        ? (suffix ? "Shortened deterministically. Save or share to recover the keyword." : "Fits Valheim as typed.")
+        : "Up to " + VALHEIM_LIMIT + " UTF-16 units go in as typed.";
+      candidate.explanation = { rule, math: explainHash, example };
+      return candidate;
+    }
+
+    candidate.hint = "The same keyword gives the same decimal seed.";
+    candidate.explanation = {
+      rule: "Hash the full keyword exactly as typed, including case, punctuation and spaces. " +
+        "Write the unsigned 32-bit result as decimal.",
+      math: explainHash
+    };
+    return candidate;
+  }
+
+  function fitCandidate(input, encoding) {
+    const candidate = { id: "fit", label: "Force fit", value: "", error: "" };
+    if (!encoding) {
+      const packed = ForceFit.decode(game, input);
+      candidate.value = packed?.keyword ?? "";
+      candidate.error = input && !packed ? "This seed does not match Force fit." : "";
+      candidate.hint = packed?.kind === "hash"
+        ? "Open this seed’s share link or saved entry to recover its keyword."
+        : "Force fit recovers keywords packed into the seed.";
+      return candidate;
+    }
+
+    const result = ForceFit.encode(game, input);
+    const fitRule = "Try packing spaces and a–z first, then UTF-8 bytes. If the keyword exceeds both " +
+      "capacities, use a deterministic game seed and keep its exact keyword in Save or Share.";
+    if (!result) {
+      candidate.hint = "Pack a keyword into this game’s seed format.";
+      candidate.explanation = { rule: fitRule };
+      return candidate;
+    }
+
+    candidate.value = result.seed;
+    const example = "Slot " + result.index;
+    if (result.kind === "hash") {
+      candidate.hint = "Save or share this seed to recover the exact keyword.";
+      candidate.explanation = {
+        rule: "The keyword exceeds the space for packed text. Start a 64-bit FNV-1a hash at " +
+          "14695981039346656037. XOR each UTF-8 byte in, multiply by 1099511628211 and keep 64 bits.",
+        math: "Take the remainder modulo " + result.slots + ", then multiply by 3. " + result.format,
+        example
+      };
+      return candidate;
+    }
+
+    const compact = result.kind === "compact";
+    candidate.hint = "The exact keyword is packed into this seed.";
+    candidate.explanation = {
+      rule: compact
+        ? "Start at 0. For each symbol, multiply by 27 and add its position in space followed by a–z, counting from 1."
+        : "Start at 0. For each UTF-8 byte, multiply by 256 and add the byte value plus 1.",
+      math: "Subtract 1 from the result, multiply by 3 and add " + (compact ? "1. " : "2. ") + result.format,
+      example
+    };
+    return candidate;
+  }
+
   function getCandidates() {
     const encoding = view === "encode";
-    const input = encoding ? phraseInput.value : seedInput.value;
+    const input = encoding ? keywordInput.value : seedInput.value;
     const preset = PRESETS[game];
-    const candidates = Object.entries(METHODS).map(([id, method]) => {
+    const candidates = matchingMethods(game).map(([id, method]) => {
       const value = method[view](input);
-      const candidate = { id, label: method.label, value, error: "", hint: method.hint };
+      const candidate = { id, label: method.label, value, error: "", hint: method.hint, reversible: Boolean(method.steps) };
       if (!input) return candidate;
       if (encoding) {
         candidate.error = value ? preset.validate(value) : "No characters usable with this method.";
         if (value) candidate.hint = fitsPreset() || method.hint;
+        if (method.steps) candidate.explanation = { rule: method.steps };
       } else if (!value) {
         candidate.error = method.invalid;
+      } else {
+        candidate.hint = "Open a share link or saved entry for the exact keyword.";
       }
       return candidate;
     });
 
-    if (encoding && preset.encode) {
-      const hint = game === "valheim"
-        ? "Up to 10 characters. Longer phrases get a fixed code."
-        : "The same phrase gives the same map seed.";
-      candidates.unshift({ id: "phrase", label: "Phrase seed", value: preset.encode(input), hint });
-    }
+    if (ForceFit.hasSpace(game)) candidates.unshift(fitCandidate(input, encoding));
+    if (encoding && preset.keyword) candidates.unshift(keywordCandidate(input, preset));
     if (!encoding) {
       candidates.unshift({
         id: "game", label: "Game seed", value: input,
         error: input ? preset.validate(input) : "",
-        hint: input ? fitsPreset() : "Paste a seed to check its format."
+        hint: input ? fitsPreset() : "Paste a seed to check it, or a share link to recover its keyword."
       });
+      const original = knownKeyword();
+      if (original !== undefined) {
+        candidates.unshift({
+          id: "original", label: "Original keyword", value: original, error: "",
+          hint: "Recovered exactly from the seed link or saved entry."
+        });
+      }
     }
     return candidates;
   }
@@ -126,6 +215,54 @@
       methodSelect.replaceChildren(...choices.map(({ id, label }) => new Option(label, id)));
     }
     methodSelect.value = selected;
+  }
+
+  function readingsPerPage() {
+    const height = app.clientHeight;
+    if (height <= 355) return app.clientWidth >= 530 ? 2 : 1;
+    if (height <= 495) return 1;
+    if (height <= 595) return 2;
+    if (height <= 685) return 3;
+    return 4;
+  }
+
+  function renderReadings(candidates) {
+    const list = byId("reading-list");
+    const priority = ({ id, reversible }) => {
+      if (id === "original") return 0;
+      if (id === "fit" && game === "valheim") return 1;
+      return reversible ? 2 : 3;
+    };
+    const readings = candidates.filter(({ id, value, error }) => id !== "game" && value && !error)
+      .sort((left, right) => priority(left) - priority(right));
+    readingLimit = readingsPerPage();
+    const pages = Math.max(1, Math.ceil(readings.length / readingLimit));
+    readingPage = Math.min(readingPage, pages - 1);
+    byId("reading-count").textContent = readings.length === 0 ? "No matching readings"
+      : readings.length + (readings.length === 1 ? " reading" : " readings");
+    byId("reading-page").value = (readingPage + 1) + " / " + pages;
+    byId("reading-pager").hidden = pages === 1;
+    byId("reading-previous").disabled = readingPage === 0;
+    byId("reading-next").disabled = readingPage === pages - 1;
+
+    const first = readingPage * readingLimit;
+    const buttons = readings.slice(first, first + readingLimit).map(({ id, label, value }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "reading";
+      const name = document.createElement("span");
+      name.textContent = label;
+      const keyword = document.createElement("code");
+      keyword.textContent = value;
+      button.append(name, keyword);
+      button.addEventListener("click", () => {
+        decodeMethod = id;
+        refresh();
+        byId("all-readings").focus({ preventScroll: true });
+      });
+      return button;
+    });
+    list.replaceChildren(...buttons);
   }
 
   function catalogEntries(entries) {
@@ -160,33 +297,37 @@
       game === "none" ? PRESETS[entry.game].label : "",
       entry.terrain,
       entry.size ? entry.size + " map" : "",
+      record?.keyword !== undefined ? "Keyword saved" : "",
       example?.description
     ].filter(Boolean);
     renderResult({
       value: entry.seed, label: example?.title ?? "Seed", note: details.join(" · "),
-      record, source: example?.source
+      record, source: example?.source, allowRecovery: record?.keyword !== undefined
     });
   }
 
   function renderResult({
     value = "", label = "Seed", note = "", error = "", record = null, source,
-    showValue = true, seedActions = true, actions = true
+    showValue = true, seedActions = true, actions = true, explanation, allowRecovery = false
   }) {
-    currentResult = { value, label, record, showValue };
+    currentResult = { value, record, showValue, explanation };
+    byId("explain-method").hidden = !explanation;
+    byId("recover-saved").hidden = !allowRecovery;
     byId("value-row").hidden = !showValue;
     byId("result-label").textContent = label;
     resultValue.value = value;
     resultStatus.textContent = error || note;
     resultStatus.dataset.invalid = String(Boolean(error));
-    resultStatus.parentElement.hidden = !error && !note && !source;
+    resultStatus.parentElement.hidden = !error && !note && !source && !allowRecovery;
 
     const sourceLink = byId("source");
     sourceLink.hidden = !source;
     if (source) sourceLink.href = source;
 
     byId("copy").parentElement.hidden = !actions;
-    byId("copy").disabled = !value;
-    byId("copy").textContent = label === "Decoded text" ? "Copy text" : "Copy";
+    const copy = byId("copy");
+    copy.disabled = !value;
+    copy.setAttribute("aria-label", label.endsWith("keyword") ? "Copy keyword" : "Copy");
     const saveButton = byId("save");
     saveButton.hidden = !seedActions;
     const isSaved = record && saved.some((entry) => seedKey(entry) === seedKey(record));
@@ -206,7 +347,6 @@
   }
 
   function render() {
-    const decodingGameSeed = view === "decode" && decodeMethod === "game";
     byId("workspace").dataset.view = view;
     for (const tab of tabs) {
       const active = tab.dataset.tab === view;
@@ -215,12 +355,12 @@
       else tab.removeAttribute("aria-current");
     }
     byId("result").hidden = view === "keypad";
-    byId("method-row").hidden = view === "seeds";
-    byId("map-settings").hidden = game !== "going-medieval" ||
-      (view !== "encode" && !decodingGameSeed);
+    byId("method-row").hidden = view !== "encode";
+    byId("reading-detail").hidden = true;
+    byId("readings").hidden = true;
+    byId("workspace").removeAttribute("data-decode-list");
+    byId("map-settings").hidden = true;
     byId("roll").hidden = !PRESETS[game].roll;
-    const inputMode = decodingGameSeed && PRESETS[game].numeric ? "numeric" : "text";
-    if (seedInput.inputMode !== inputMode) seedInput.inputMode = inputMode;
 
     if (view === "keypad") {
       renderPhone();
@@ -231,15 +371,41 @@
       return;
     }
 
+    const encoding = view === "encode";
     const candidates = getCandidates();
-    const method = view === "encode" ? encodeMethod : decodeMethod;
-    setOptionLabels(candidates, method);
-    const { value, error, hint } = candidates.find(({ id }) => id === method);
-    const seedActions = view === "encode" || decodingGameSeed;
-    const record = seedActions && !error ? makeSeed(game, value, settings()) : null;
+    const method = encoding ? encodeMethod : decodeMethod;
+    const { id, value, error, hint, explanation, label: methodLabel } =
+      candidates.find((candidate) => candidate.id === method) ?? candidates[0];
+    if (encoding) encodeMethod = id;
+    else decodeMethod = id;
+    if (encoding) setOptionLabels(candidates, id);
+
+    const gameSeed = id === "game";
+    if (gameSeed && seedInput.value) {
+      byId("workspace").setAttribute("data-decode-list", "");
+      byId("readings").hidden = false;
+      renderReadings(candidates);
+    }
+    if (!encoding && !gameSeed) {
+      byId("reading-detail").hidden = false;
+      byId("reading-method").textContent = methodLabel;
+    }
+    const exact = !encoding && (id === "original" || id === "fit");
+    const seedActions = encoding || gameSeed || (exact && Boolean(value));
+    const inputMode = !encoding && seedActions && PRESETS[game].numeric ? "numeric" : "text";
+    if (seedInput.inputMode !== inputMode) seedInput.inputMode = inputMode;
+    byId("map-settings").hidden = game !== "going-medieval" || !seedActions;
+
+    const seed = encoding ? value : seedInput.value;
+    const keyword = encoding ? keywordInput.value : knownKeyword() ?? (exact ? value : undefined);
+    const record = seedActions && !error ? makeSeed(game, seed, { ...settings(), keyword }) : null;
+    let label = "Seed";
+    if (!encoding && !gameSeed) {
+      label = id === "original" ? "Original keyword" : exact ? "Packed keyword" : "Possible reading";
+    }
     renderResult({
-      value, error, note: hint, record, seedActions, showValue: !decodingGameSeed,
-      label: seedActions ? "Seed" : "Decoded text"
+      value, error, note: hint, record, seedActions, label, explanation,
+      showValue: !gameSeed && (!exact || Boolean(value))
     });
   }
 
@@ -258,6 +424,34 @@
     view = nextView;
     byId("workspace").scrollTop = 0;
     refresh();
+  }
+
+  function openSeed(record, showKeyword = false) {
+    if (game !== record.game) {
+      game = record.game;
+      gameSelect.value = game;
+      encodeMethod = PRESETS[game].keyword ? "keyword" : "mtap";
+      libraryIndex = 0;
+    }
+    recovery = record;
+    seedInput.value = record.seed;
+    terrainSelect.value = record.terrain ?? "";
+    sizeSelect.value = record.size ?? "";
+    readingPage = 0;
+    decodeMethod = showKeyword && record.keyword !== undefined ? "original" : "game";
+    navigate("decode");
+  }
+
+  function explainMethod() {
+    const { explanation } = currentResult;
+    if (!explanation) return;
+    byId("method-title").textContent = "How this seed is made";
+    byId("method-rule").textContent = explanation.rule;
+    byId("method-math").textContent = explanation.math ?? "";
+    byId("method-math").hidden = !explanation.math;
+    byId("method-example").textContent = explanation.example ?? "";
+    byId("method-example").hidden = !explanation.example;
+    byId("method-dialog").showModal();
   }
 
   function toggleSave() {
@@ -351,17 +545,17 @@
   }
 
   function renderPhone() {
-    byId("phone-text").value = phonePhrase;
-    byId("use-phrase").disabled = !phonePhrase;
+    byId("phone-text").value = phoneKeyword;
+    byId("use-keyword").disabled = !phoneKeyword;
   }
 
   function tapKey(key, button) {
     const letters = KEYMAP[key];
     if (pendingKey === key) {
-      const next = (letters.indexOf(phonePhrase.at(-1)) + 1) % letters.length;
-      phonePhrase = phonePhrase.slice(0, -1) + letters[next];
+      const next = (letters.indexOf(phoneKeyword.at(-1)) + 1) % letters.length;
+      phoneKeyword = phoneKeyword.slice(0, -1) + letters[next];
     } else {
-      phonePhrase += letters[0];
+      phoneKeyword += letters[0];
     }
     finishTap();
     pendingKey = key;
@@ -372,9 +566,9 @@
 
   function keypadAction(action) {
     finishTap();
-    if (action === "clear") phonePhrase = "";
-    if (action === "space") phonePhrase += " ";
-    if (action === "backspace") phonePhrase = phonePhrase.slice(0, -1);
+    if (action === "clear") phoneKeyword = "";
+    if (action === "space") phoneKeyword += " ";
+    if (action === "backspace") phoneKeyword = phoneKeyword.slice(0, -1);
     renderPhone();
   }
 
@@ -402,11 +596,22 @@
 
   gameSelect.addEventListener("change", () => {
     game = gameSelect.value;
-    encodeMethod = PRESETS[game].encode ? "phrase" : "mtap";
-    decodeMethod = game === "none" ? "mtap" : "game";
+    recovery = null;
+    encodeMethod = PRESETS[game].keyword ? "keyword" : "mtap";
+    decodeMethod = "game";
+    readingPage = 0;
     libraryIndex = 0;
     writeStorage(gameKey, game);
     refresh();
+  });
+  byId("explain-method").addEventListener("click", explainMethod);
+  byId("recover-saved").addEventListener("click", () => openSeed(currentResult.record, true));
+  byId("reading-previous").addEventListener("click", () => { readingPage--; refresh(); });
+  byId("reading-next").addEventListener("click", () => { readingPage++; refresh(); });
+  byId("all-readings").addEventListener("click", () => {
+    decodeMethod = "game";
+    refresh();
+    byId("reading-list").querySelector("button")?.focus({ preventScroll: true });
   });
 
   methodSelect.addEventListener("change", () => {
@@ -416,7 +621,10 @@
   });
 
   for (const tab of tabs) {
-    tab.addEventListener("click", () => navigate(tab.dataset.tab));
+    tab.addEventListener("click", () => {
+      if (tab.dataset.tab === "decode") decodeMethod = "game";
+      navigate(tab.dataset.tab);
+    });
   }
   for (const button of collectionButtons) {
     button.addEventListener("click", () => {
@@ -425,8 +633,20 @@
       refresh();
     });
   }
-  for (const field of [phraseInput, seedInput]) {
-    field.addEventListener("input", refresh);
+  keywordInput.addEventListener("input", refresh);
+  seedInput.addEventListener("input", () => {
+    const entry = readSeedLink(seedInput.value, location.href);
+    if (entry) {
+      seedInput.blur();
+      openSeed(entry);
+      return;
+    }
+    if (recovery?.seed !== seedInput.value) recovery = null;
+    readingPage = 0;
+    decodeMethod = "game";
+    refresh();
+  });
+  for (const field of [keywordInput, seedInput]) {
     field.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.isComposing) field.blur();
     });
@@ -437,7 +657,9 @@
   for (const select of [terrainSelect, sizeSelect]) select.addEventListener("change", refresh);
   byId("roll").addEventListener("click", () => {
     seedInput.blur();
+    recovery = null;
     seedInput.value = PRESETS[game].roll(crypto);
+    readingPage = 0;
     decodeMethod = "game";
     refresh();
   });
@@ -446,9 +668,9 @@
   byId("copy").addEventListener("click", copyResult);
   byId("save").addEventListener("click", toggleSave);
   byId("share").addEventListener("click", shareSeed);
-  byId("use-phrase").addEventListener("click", () => {
+  byId("use-keyword").addEventListener("click", () => {
     finishTap();
-    phraseInput.value = phonePhrase;
+    keywordInput.value = phoneKeyword;
     navigate("encode");
   });
   window.addEventListener("storage", (event) => {
@@ -464,7 +686,9 @@
     if (viewport && viewport.scale === 1) {
       app.style.setProperty("--app-height", Math.floor(viewport.height) + "px");
     }
-    app.toggleAttribute("data-typing", [phraseInput, seedInput].includes(document.activeElement));
+    app.toggleAttribute("data-typing", [keywordInput, seedInput].includes(document.activeElement));
+    if (view === "decode" && decodeMethod === "game" && seedInput.value &&
+        readingLimit !== readingsPerPage()) render();
   }
   viewport?.addEventListener("resize", fitViewport);
   window.addEventListener("resize", fitViewport);
