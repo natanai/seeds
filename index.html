@@ -72,12 +72,14 @@
 
       <section id="result" class="result" aria-label="Result">
         <div id="method-row">
-          <label for="method">Method</label>
+          <label class="sr-only" for="method">Method</label>
           <div class="select">
             <select id="method"></select>
           </div>
           <button id="explain-method" type="button" aria-label="How this seed is made"
             aria-haspopup="dialog" hidden>How?</button>
+          <button id="choose-seed" type="button" aria-label="Choose a seed for me"
+            title="Choose a seed for me"><span aria-hidden="true">⚄</span></button>
         </div>
         <div id="reading-detail" hidden>
           <button id="all-readings" type="button">All readings</button>
@@ -101,7 +103,11 @@
         </div>
 
         <div class="result-note">
-          <p id="result-status" class="hint" role="status"></p>
+          <div class="result-description">
+            <p id="variation-name" hidden></p>
+            <p id="result-status" class="hint" role="status"></p>
+          </div>
+          <button id="next-variation" type="button" aria-describedby="variation-name" hidden>Variation</button>
           <a id="source" href="#" target="_blank" rel="noopener" hidden>Source</a>
           <button id="recover-saved" type="button" hidden>Open keyword</button>
         </div>

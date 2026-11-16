@@ -116,13 +116,14 @@ const SeedTools = (() => {
     return [...text].reverse().join("");
   }
 
-  function reversibleMethod(label, transform, steps, requiresLetters = false) {
-    const apply = (text) => {
-      const transformed = transform(text);
+  function reversibleMethod(label, transform, steps, { requiresLetters = false, inverse = transform } = {}) {
+    const changed = (text, operation) => {
+      const transformed = operation(text);
       return transformed === text ? "" : transformed;
     };
     return {
-      label, encode: apply, decode: apply, steps, requiresLetters, hint: steps,
+      label, steps, requiresLetters, hint: steps,
+      encode: (text) => changed(text, transform), decode: (text) => changed(text, inverse),
       invalid: "The keyword is identical under this transformation."
     };
   }
@@ -194,7 +195,7 @@ const SeedTools = (() => {
       label: "Multi-tap",
       encode: encodeMultiTap,
       decode: decodeMultiTap,
-      hint: "A zero can be a space or separate letters on one key.",
+      hint: "Replace letters with repeated phone keys. A zero marks a space or separates letters on the same key.",
       invalid: "Use tap runs on keys 2–9, separated by 0."
     },
     pair: {
@@ -223,7 +224,7 @@ const SeedTools = (() => {
       label: "Base 36",
       encode: encodeBase36,
       decode: decodeBase36,
-      hint: "A number with digits 0–9 and letters A–Z.",
+      hint: "Read the letters and digits as a base-36 number and write it in decimal.",
       invalid: "Use a decimal integer."
     },
     upperLookalikes: reversibleMethod("Look-alikes (A↔4)",
@@ -233,8 +234,18 @@ const SeedTools = (() => {
     flipCase: reversibleMethod("Flip case",
       (text) => text.replace(/[A-Za-z]/g, (letter) =>
         letter <= "Z" ? letter.toLowerCase() : letter.toUpperCase()),
-      "Switch A–Z to lowercase and a–z to uppercase.", true),
+      "Switch A–Z to lowercase and a–z to uppercase.", { requiresLetters: true }),
     reverse: reversibleMethod("Reverse", reverse, "Read the seed characters in reverse order."),
+    rotate: reversibleMethod("Rotate characters",
+      (text) => {
+        const [first, ...rest] = [...text];
+        return first ? rest.join("") + first : "";
+      },
+      "Move the first character to the end. To reverse it, move the last character to the front.",
+      { inverse: (text) => {
+        const characters = [...text];
+        return (characters.pop() ?? "") + characters.join("");
+      } }),
     reverseLookalikes: reversibleMethod("Reverse + look-alikes",
       (text) => reverse(swapLookalikes(text, lookalikes)), "Reverse the characters and swap " + pairs)
   };

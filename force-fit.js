@@ -6,6 +6,8 @@ const ForceFit = (() => {
   const HEX = "0123456789ABCDEF";
   const ISAAC = "ABCDEFGHJKLMNPQRSTWXYZ01234V6789";
   const U32_MAX = 4294967295n;
+  // Fractions of the game's available slots. Keep these stable for existing seeds.
+  const OFFSETS = [0n, 618n, 236n, 854n, 472n, 90n, 708n, 326n];
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   const encoder = new TextEncoder();
 
@@ -157,11 +159,33 @@ const ForceFit = (() => {
     return { seed: space.write(index), kind: "hash", index, hash, slots, format: space.format };
   }
 
-  function decode(game, seed) {
+  function shiftSlot(space, index, variant, undo = false) {
+    // Shift inside the same lane so an overflow hash always stays an overflow hash.
+    const lane = index % 3n;
+    const slots = (space.capacity + 2n - lane) / 3n;
+    const offset = slots * OFFSETS[variant] / 1000n;
+    const position = (index / 3n + (undo ? slots - offset : offset)) % slots;
+    return { index: position * 3n + lane, offset, slots };
+  }
+
+  function encodeVariants(game, keyword) {
+    const base = encode(game, keyword);
+    if (!base) return [];
+    const space = spaces[game];
+    return OFFSETS.map((_, variant) => {
+      const shifted = shiftSlot(space, base.index, variant);
+      return { ...base, ...shifted, variant, seed: space.write(shifted.index) };
+    });
+  }
+
+  function seedIndex(game, seed) {
     if (!hasSpace(game)) return null;
     const space = spaces[game];
     const index = space.read(seed);
-    if (index === null || index < 0n || index >= space.capacity) return null;
+    return index !== null && index >= 0n && index < space.capacity ? index : null;
+  }
+
+  function decodeSlot(game, index) {
     const tag = index % 3n;
     if (tag === 0n) return { kind: "hash" };
 
@@ -178,7 +202,26 @@ const ForceFit = (() => {
     return result?.index === index ? { keyword, ...result } : null;
   }
 
-  return { hasSpace, encode, decode };
+  function decode(game, seed) {
+    const index = seedIndex(game, seed);
+    return index === null ? null : decodeSlot(game, index);
+  }
+
+  function decodeVariants(game, seed) {
+    const index = seedIndex(game, seed);
+    if (index === null || index % 3n === 0n) return [];
+    const space = spaces[game];
+    return OFFSETS.flatMap((_, variant) => {
+      const decoded = decodeSlot(game, shiftSlot(space, index, variant, true).index);
+      return decoded?.keyword ? [{ keyword: decoded.keyword, variant }] : [];
+    });
+  }
+
+  function validIsaacSeed(seed) {
+    return seedIndex("isaac", seed) !== null;
+  }
+
+  return { hasSpace, encode, encodeVariants, decode, decodeVariants, validIsaacSeed };
 })();
 
 if (typeof module === "object") module.exports = ForceFit;

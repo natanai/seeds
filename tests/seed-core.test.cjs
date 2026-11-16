@@ -113,6 +113,39 @@ test("links and saved records retain the exact keyword even when game seeds coll
   assert.deepEqual(readSeedLink(home + "?game=valheim&seed=AB", home), { game: "valheim", seed: "AB" });
 });
 
+test("each Force fit shift derives a distinct valid seed and preserves reversible text", () => {
+  for (const game of Object.keys(PRESETS).filter(ForceFit.hasSpace)) {
+    const packed = ForceFit.encodeVariants(game, "ab");
+    assert.equal(packed.length, 8, game);
+    assert.equal(packed[0].seed, ForceFit.encode(game, "ab").seed, game);
+    assert.equal(new Set(packed.map(({ seed }) => seed)).size, packed.length, game);
+    for (const { seed, variant } of packed) {
+      assert.ok(makeSeed(game, seed), game);
+      if (game === "isaac") assert.ok(ForceFit.validIsaacSeed(seed));
+      assert.ok(ForceFit.decodeVariants(game, seed).some((entry) =>
+        entry.variant === variant && entry.keyword === "ab"), game);
+    }
+
+    const keyword = "Long keywords still drive every shift. 🐾";
+    const overflow = ForceFit.encodeVariants(game, keyword);
+    assert.deepEqual(overflow, ForceFit.encodeVariants(game, keyword), game);
+    assert.equal(new Set(overflow.map(({ seed }) => seed)).size, overflow.length, game);
+    for (const { seed, kind } of overflow) {
+      assert.equal(kind, "hash", game);
+      assert.ok(makeSeed(game, seed), game);
+      assert.deepEqual(ForceFit.decodeVariants(game, seed), [], game);
+    }
+  }
+  assert.equal(ForceFit.validIsaacSeed("12345678"), false);
+});
+
+test("rotating a keyword reverses exactly, including spaces and emoji", () => {
+  const keyword = "🐾 Moss home ";
+  const rotated = METHODS.rotate.encode(keyword);
+  assert.equal(rotated, " Moss home 🐾");
+  assert.equal(METHODS.rotate.decode(rotated), keyword);
+});
+
 test("both roll methods return seeds accepted by their game formats", () => {
   const random = { getRandomValues: (values) => values.fill(4294967295) };
   assert.match(PRESETS.valheim.roll(random), /^[A-Za-z0-9]{10}$/);
