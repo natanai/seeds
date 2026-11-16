@@ -209,12 +209,20 @@ const SeedTrace = (() => {
       ]), rankPage(text, true), symbolsPage(text, trace.keyword, true)];
   }
 
-  function direct(id, keyword, seed, decoding) {
+  function direct(id, keyword, seed, decoding, game) {
     const method = SeedTools.METHODS[id];
     let rule = method?.rule ?? "The seed is the keyword as typed, with the same characters and order.";
     const source = decoding ? seed : keyword;
     const result = decoding ? keyword : seed;
     const rows = [[decoding ? "Seed" : "Keyword", quoted(source)]];
+    const decimal = SeedTools.canonicalSeed(game, seed);
+    const readSeed = SeedTools.methodInput(game, id, decoding ? seed : decimal);
+    if (decoding && readSeed !== seed) {
+      rows.push(["Digits in two-character groups", quoted(readSeed)]);
+      rule += " Decimal game seeds can omit a leading zero. An odd digit count restores that zero before pairing.";
+    } else if (!decoding && decimal !== seed) {
+      rows.push(["Game’s decimal form", quoted(decimal)]);
+    }
     if (method && !method.reversible) {
       const normalized = SeedTools.normalize(keyword);
       const letters = id === "base36" ? normalized.replace(/ /g, "")
@@ -224,14 +232,14 @@ const SeedTrace = (() => {
         rows.push(["Keys", Object.entries(SeedTools.KEYMAP).map(([key, letters]) => key + " " + letters).join("   ")]);
       }
       if (id === "mtap") {
-        rows.push(["Digit run ↔ reading", method.runs(seed).map(([run, reading]) => run + " ↔ " + reading).join("   ")]);
+        rows.push(["Digit run ↔ reading", method.runs(readSeed).map(([run, reading]) => run + " ↔ " + reading).join("   ")]);
       }
       if (id === "base36") {
         rows.push(["Values of the base 36 digits", [...keyword.replace(/^-/, "")].map((digit) => parseInt(digit, 36)).join(", ")]);
       } else if (id !== "mtap") {
         rows.push(["Character ↔ code", [...letters].map((letter) => letter + " ↔ " + method.encode(letter)).join("   ")]);
       }
-      const canonical = method.ignoresCase ? method.decode(seed) : "";
+      const canonical = method.ignoresCase ? method.decode(readSeed) : "";
       if (/[A-Z]/.test(canonical)) {
         rule += " Either case gives the same code. Each bracket shows the cases that Decode can read at that position.";
         rows.push(["Possible casing", canonical.replace(/[A-Z]/g, (letter) => "[" + letter + letter.toLowerCase() + "]")]);

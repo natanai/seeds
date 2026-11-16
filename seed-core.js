@@ -1,6 +1,7 @@
 "use strict";
 
 const SeedTools = (() => {
+  const packedSeeds = typeof module === "object" ? require("./force-fit.js") : ForceFit;
   const U32_MAX = 4294967295n;
   const I64_MIN = -9223372036854775808n;
   const I64_MAX = 9223372036854775807n;
@@ -22,9 +23,12 @@ const SeedTools = (() => {
   function encodeMultiTap(text) {
     let output = "";
     let previousKey = "";
-    for (const letter of normalize(text)) {
+    const letters = normalize(text);
+    for (let index = 0; index < letters.length; index++) {
+      const letter = letters[index];
       if (letter === " ") {
-        output += "0";
+        const nextKey = letterKeys[letters[index + 1]]?.[0];
+        output += previousKey && previousKey === nextKey ? "1" : "0";
         previousKey = "";
         continue;
       }
@@ -37,13 +41,16 @@ const SeedTools = (() => {
   }
 
   function decodeMultiTap(seed, trace) {
-    if (!/^[2-9][02-9]*$/.test(seed)) return "";
-    const runs = seed.match(/([02-9])\1*/g);
+    if (!/^[2-9]\d*$/.test(seed)) return "";
+    const runs = seed.match(/(\d)\1*/g);
     let text = "";
     for (const [index, run] of runs.entries()) {
       const key = run[0];
-      if (key === "0") {
-        if (run.length === 1 && runs[index - 1][0] === runs[index + 1]?.[0]) {
+      if (key === "0" || key === "1") {
+        const previousKey = runs[index - 1][0];
+        const sameKey = Boolean(KEYMAP[previousKey] && previousKey === runs[index + 1]?.[0]);
+        if (key === "1" && (run.length !== 1 || !sameKey)) return "";
+        if (key === "0" && run.length === 1 && sameKey) {
           trace?.push([run, "same-key separator"]);
           continue;
         }
@@ -166,8 +173,10 @@ const SeedTools = (() => {
 
   function isaac(seed) {
     const code = seed.replace(/\s+/g, "").toUpperCase();
-    return code.length === 8 && lettersAndDigits.test(code) && !/[IOU]/.test(code)
-      ? "" : "Use 8 letters or digits, excluding I, O and U.";
+    if (code.length !== 8 || !lettersAndDigits.test(code) || /[IOU]/.test(code)) {
+      return "Use 8 letters or digits, excluding I, O and U.";
+    }
+    return packedSeeds.validIsaacSeed(seed) ? "" : "Check the seed.";
   }
 
   function alphanumeric(seed, minimum, maximum) {
@@ -187,7 +196,7 @@ const SeedTools = (() => {
         decodeMultiTap(seed, trace);
         return trace;
       },
-      rule: "Repeat the phone key once per tap. A zero separates consecutive letters on the same key, and other zeros encode spaces. Leading zeros are removed. Decode reads runs of equal digits and skips a single zero between matching keys."
+      rule: "Repeat the phone key once per tap. A zero separates consecutive letters on the same key. A single space between letters on that key uses 1. Other spaces use 0. Leading zeros are removed."
     },
     pair: {
       label: "Keypad [key][press]",
@@ -265,7 +274,8 @@ const SeedTools = (() => {
     isaac: { label: "Binding of Isaac", validate: isaac, allowsLetters: true },
     sts: { label: "Slay the Spire", validate: (seed) => alphanumeric(seed, 8, 16), allowsLetters: true },
     spelunky2: {
-      label: "Spelunky 2", validate: (seed) => alphanumeric(seed, 6, 12), allowsLetters: true
+      label: "Spelunky 2", validate: (seed) => /^[0-9A-F]{8}$/i.test(seed) ? "" : "Use eight hexadecimal digits.",
+      allowsLetters: true
     },
     deadcells: {
       label: "Dead Cells",
@@ -275,12 +285,29 @@ const SeedTools = (() => {
     factorio: { label: "Factorio", validate: unsigned32, numeric: true }
   };
 
+  const alphabetPositions = Array.from({ length: 26 }, (_, index) => String(index + 1));
+
   function matchingMethods(game) {
-    // A separated code is a token list, even when a one-letter input has only one token.
-    const { allowsSeparators, allowsLetters } = PRESETS[game];
+    const { allowsSeparators, allowsLetters, validate } = PRESETS[game];
+    const allowsAlphabetCode = allowsSeparators || alphabetPositions.some((code) => !validate(code));
     return Object.entries(METHODS).filter(([, method]) =>
-      (!method.usesSeparators || allowsSeparators) &&
+      (!method.usesSeparators || allowsAlphabetCode) &&
       (!method.requiresLetters || allowsLetters || allowsSeparators));
+  }
+
+  function normalizesDecimal(game) {
+    return game === "minecraft" || (PRESETS[game].numeric && game !== "deadcells");
+  }
+
+  function canonicalSeed(game, seed) {
+    return normalizesDecimal(game) && signedInteger.test(seed) ? BigInt(seed).toString() : seed;
+  }
+
+  function methodInput(game, id, seed) {
+    if (id !== "fixed" || !normalizesDecimal(game) || !digits.test(seed)) return seed;
+    const decimal = canonicalSeed(game, seed);
+    // A1Z26 pairs need at most one leading zero. The digit count identifies it uniquely.
+    return decimal.length % 2 ? "0" + decimal : decimal;
   }
 
   function matchesReading(method, reading, keyword) {
@@ -296,7 +323,7 @@ const SeedTools = (() => {
     return [...new Set([value, lower, title])];
   }
 
-  return { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, normalize };
+  return { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput, normalize };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;
