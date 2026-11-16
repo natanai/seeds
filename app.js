@@ -1,8 +1,8 @@
 "use strict";
 
 (() => {
-  const { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput,
-    translationError, quotePreview } = SeedTools;
+  const { KEYMAP, FAMILIES, PRESETS, matchingMethods, caseReadings, canonicalSeed, methodInput,
+    inspectEncodings } = SeedTools;
   const byId = (id) => document.getElementById(id);
   const app = byId("app");
   const workspace = byId("workspace");
@@ -10,17 +10,13 @@
   const methodSelect = byId("method");
   const keywordInput = byId("keyword");
   const seedInput = byId("seed-input");
-  const keyInput = byId("key-input");
   const resultValue = byId("result-value");
-  const recoveryKey = byId("recovery-key");
+  const variantLabel = byId("encoding-variant");
   const tabs = [...document.querySelectorAll("[data-tab]")];
   const copies = [...document.querySelectorAll("[data-copy]")];
   const gameKey = "meaningful-seeds.game";
-  const methodOptions = {
-    literal: new Option("As typed", "literal"),
-    ...Object.fromEntries(Object.entries(METHODS).map(([id, method]) => [id, new Option(method.label, id)])),
-    fit: new Option("Force fit", "fit")
-  };
+  const methodOptions = Object.fromEntries(Object.entries(FAMILIES)
+    .map(([id, { label }]) => [id, new Option(label, id)]));
   methodSelect.replaceChildren(...Object.values(methodOptions));
 
   function preferredGame() {
@@ -35,16 +31,15 @@
 
   let game = preferredGame();
   let view = "encode";
-  let encodeMethod;
+  let encodeFamily;
   let encodeId;
   let encodings = [];
   let encoding;
-  let unavailable = new Map();
+  let failures = [];
   let decoding;
   let tracePages = [];
   let traceIndex = 0;
   const rolledSeeds = new Set();
-  const keys = { encode: "", decode: "" };
   let readingId;
   let readingPage = 0;
   let readingLimit = 0;
@@ -65,105 +60,63 @@
     return canonicalSeed(game, seed);
   }
 
-  function valheimReadingConflict(seed, keyword) {
-    if (game !== "valheim") return "";
-    if (ForceFit.needsRecovery(game, seed)) return "The * prefix makes Decode ask for a generated r1 key.";
-    const packet = ForceFit.readPacket(game, seed);
-    if (packet?.status === "decoded") {
-      return packet.keyword === keyword ? "" : `The ! prefix makes Decode read ${quotePreview(packet.keyword)}.`;
-    }
-    if (packet) return SeedTrace.packetFailure(ForceFit.inspect("packet", game, seed));
-    return ForceFit.readLegacy(game, seed).olderCode ? "Decode reads this ~ seed as an older hash with no stored keyword." : "";
-  }
-
-  function availableEncodings(keyword) {
-    const key = keys.encode;
-    const canPack = ForceFit.hasSpace(game);
-    const compatible = new Map(matchingMethods(game));
-    const direct = [];
-    let exactDirect = false;
-    const disabled = new Set();
-    unavailable = new Map();
-    for (const [id, option] of Object.entries(methodOptions)) {
-      if (id === "fit") continue;
-      const method = compatible.get(id);
-      if (id !== "literal" && !method) {
-        disabled.add(id);
-        unavailable.set(id, { reason: METHODS[id].usesSeparators
-          ? `${PRESETS[game].label} rejects dashed seeds and the one-letter A1Z26 codes 1–26.`
-          : `${PRESETS[game].label} uses numeric seeds. Flip case requires letters.` });
-      } else if (keyword) {
-        const value = id === "literal" ? keyword : method.encode(keyword) || (method.reversible ? keyword : "");
-        const formatError = value && validateSeed(value);
-        const stored = formatError ? "" : seedIdentity(value);
-        const restored = method && stored
-          ? method.decode(methodInput(game, id, stored)) || (method.reversible ? stored : "")
-          : stored;
-        const reason = formatError || (!value || !matchesReading(method, restored, keyword)
-          ? translationError(game, id, keyword, value, stored, restored)
-          : id === "literal" ? "" : valheimReadingConflict(value, keyword));
-        if (reason) unavailable.set(id, { reason, attempted: value });
-        else {
-          direct.push({ id, method: id, value, label: option.text });
-          exactDirect ||= restored === keyword;
-        }
-      }
-    }
-
-    if (!canPack) {
-      disabled.add("fit");
-      unavailable.set("fit", { reason: "Force fit needs a game’s seed limits to place and recover the keyword." });
-    }
-    const packed = ForceFit.encodeVariants(game, keyword, key).filter(({ seed }) => !validateSeed(seed))
-      .map((recipe) => ({
-        id: "fit-" + recipe.number, method: "fit", value: recipe.seed, label: SeedTrace.fitLabel(recipe)
-      }));
-    if (keyword && canPack && !packed.length && (key || encodeMethod === "fit" || !exactDirect)) {
-      packed.push(...ForceFit.encodeRecovery(game, keyword).filter(({ seed }) => !validateSeed(seed))
-        .map(({ seed, key }, index) => ({
-          id: "recovery-" + index, method: "fit", value: seed, key, label: "Force fit · seed + r1 key"
-        })));
-    }
-    if (keyword && canPack && !packed.length) {
-      unavailable.set("fit", { reason: "No Force fit recipe fits in this seed alone. Select Force fit to generate an r1 key." });
-    }
-    return {
-      disabled,
-      choices: [...direct.filter(({ id }) => id === "literal"), ...packed, ...direct.filter(({ id }) => id !== "literal")]
-    };
+  function encodingFailure() {
+    const family = methodSelect.value;
+    const failure = failures.find((attempt) => attempt.family === family && attempt.attempted)
+      ?? failures.find((attempt) => attempt.family === family);
+    if (!failure) return {};
+    const overview = encodings.length ? "" : "No available method fits " + PRESETS[game].label + ". ";
+    return { ...failure, message: overview + failure.reason };
   }
 
   function renderEncoding() {
     const keyword = keywordInput.value;
-    const { choices, disabled } = availableEncodings(keyword);
-    const selectedMethod = disabled.has(encodeMethod) ? undefined : encodeMethod;
-    encoding = selectedMethod
-      ? choices.find(({ id, method }) => id === encodeId && method === selectedMethod)
-        ?? choices.find(({ method }) => method === selectedMethod)
-      : choices[0];
+    const attempts = inspectEncodings(game, keyword);
+    failures = attempts.failures;
+    const { choices, disabled } = attempts;
+    const selected = disabled.has(encodeFamily) ? undefined : encodeFamily;
+    encoding = selected
+      ? choices.find(({ id, family }) => id === encodeId && family === selected)
+        ?? choices.find(({ family }) => family === selected)
+      : choices.find(({ family }) => family === "literal")
+        ?? choices.find(({ family }) => family === "packed") ?? choices[0];
     encodeId = encoding?.id;
-    const rollChoices = keys.encode && ForceFit.hasSpace(game)
-      ? choices.filter(({ method }) => method === "fit") : choices;
-    encodings = [...new Map(rollChoices.map((choice) => [seedIdentity(choice.value), choice])).values()];
+
+    const distinct = new Map();
+    for (const choice of choices) {
+      const identity = seedIdentity(choice.value);
+      if (!distinct.has(identity)) distinct.set(identity, choice);
+    }
+    encodings = [...distinct.values()];
     for (const [id, option] of Object.entries(methodOptions)) {
       option.disabled = disabled.has(id);
-      option.title = unavailable.get(id)?.reason ?? "";
+      option.title = option.disabled ? failures.find(({ family }) => family === id)?.reason ?? "" : "";
     }
-    methodOptions.fit.text = encoding?.method === "fit" ? encoding.label : "Force fit";
-    const fallback = Object.keys(methodOptions).find((id) => !disabled.has(id));
-    methodSelect.value = selectedMethod ?? encoding?.method ?? fallback ?? "";
+    const family = selected ?? encoding?.family ?? "literal";
+    methodSelect.value = family;
+    const failure = keyword && !encoding ? encodingFailure() : {};
+    const variant = encoding?.label ?? failure.label;
+    variantLabel.textContent = variant ?? "";
+    variantLabel.hidden = !variant || variant === FAMILIES[family].label;
+
+    const dice = byId("choose-seed");
     const current = seedIdentity(encoding?.value ?? "");
-    byId("choose-seed").disabled = !encodings.some(({ value }) => seedIdentity(value) !== current);
+    const onlyCurrent = encodings.length === 1 && seedIdentity(encodings[0].value) === current;
+    dice.disabled = !keyword || onlyCurrent;
+    dice.title = onlyCurrent ? "Only one distinct seed fits." : dice.getAttribute("aria-label");
     byId("value-row").hidden = false;
     byId("result-label").textContent = "Seed";
     resultValue.value = encoding?.value ?? "";
-    recoveryKey.value = encoding?.key ?? "";
-    byId("recovery-row").hidden = !recoveryKey.value;
-    setStatus(keyword && !encoding ? unavailable.get(methodSelect.value)?.reason : "");
+    setStatus(failure.message);
     showMap(resultValue.value);
   }
 
   function chooseSeed() {
+    keywordInput.blur();
+    if (!encodings.length) {
+      explainMethod();
+      return;
+    }
     const current = seedIdentity(encoding?.value ?? "");
     const alternatives = encodings.filter(({ value }) => seedIdentity(value) !== current);
     if (!alternatives.length) return;
@@ -171,50 +124,33 @@
     let pool = alternatives.filter(({ value }) => !rolledSeeds.has(seedIdentity(value)));
     if (!pool.length) {
       rolledSeeds.clear();
+      rolledSeeds.add(current);
       pool = alternatives;
     }
     const chosen = pool[Math.floor(Math.random() * pool.length)];
     rolledSeeds.add(seedIdentity(chosen.value));
-    encodeMethod = chosen.method;
+    encodeFamily = chosen.family;
     encodeId = chosen.id;
-    keywordInput.blur();
     render();
   }
 
   function decode(seed, formatError) {
     if (!seed) return {};
-    const key = keys.decode;
     const literal = formatError ? [] : [{ id: "literal", label: "As typed", value: seed }];
-    const recovered = ForceFit.recoveryGame(key) === game ? ForceFit.readRecovery(seed, key) : null;
-    if (recovered !== null) {
-      return {
-        result: { id: "recovery", kind: "recovery", label: "Force fit · seed + r1 key", value: recovered },
-        readings: literal
-      };
-    }
-
-    const packet = ForceFit.readPacket(game, seed, key);
-    if (packet?.status === "decoded" && game === "valheim") {
-      return {
-        result: { id: "fit", kind: "packet", label: SeedTrace.fitLabel(packet), value: packet.keyword },
-        readings: literal
-      };
-    }
-    if (ForceFit.needsRecovery(game, seed)) {
-      const trace = ForceFit.inspect("recovery", game, seed, key);
-      return { kind: "recovery", error: SeedTrace.recoveryFailure(game, key, trace), readings: literal };
-    }
+    const packet = PackedText.readPacket(game, seed);
     if (packet && packet.status !== "decoded") {
-      const trace = ForceFit.inspect("packet", game, seed, key);
-      return { kind: "packet", error: SeedTrace.packetFailure(trace), readings: literal };
+      const trace = PackedText.inspect("packet", game, seed);
+      return { kind: "packet", error: PackedText.packetError(trace), readings: literal };
     }
 
-    const older = packet ? null : ForceFit.readLegacy(game, seed);
+    const packed = packet && { id: "packed", kind: "packet", label: "Packed text · " + packet.label, value: packet.keyword };
+    if (packed && game === "valheim") return { result: packed, readings: literal };
+    const older = packet ? null : PackedText.readLegacy(game, seed);
     if (older?.olderCode) return { kind: "legacy", error: "This older ~ seed stores a hash. The keyword was discarded.", readings: literal };
     const readings = [...literal];
-    if (packet) readings.unshift({ id: "fit", kind: "packet", label: SeedTrace.fitLabel(packet), value: packet.keyword });
+    if (packed) readings.unshift(packed);
     for (const { variant, keyword } of older?.readings ?? []) {
-      readings.push({ id: "older-" + variant, kind: "legacy", variant, label: "Older Force fit " + (variant + 1), value: keyword });
+      readings.push({ id: "older-" + variant, kind: "legacy", variant, label: "Older packed text " + (variant + 1), value: keyword });
     }
     const methods = matchingMethods(game);
     methods.sort(([, left], [, right]) => Number(Boolean(right.reversible)) - Number(Boolean(left.reversible)));
@@ -225,14 +161,7 @@
         readings.push({ id: index ? id + "-" + index : id, method: id, label: method.label, value: reading });
       });
     }
-    if (!key || packet?.keyed || formatError) return { readings };
-    if (key.startsWith("r1.")) {
-      const trace = ForceFit.inspect("recovery", game, seed, key);
-      return { kind: "recovery", readings, error: SeedTrace.recoveryFailure(game, key, trace) };
-    }
-    const trace = ForceFit.inspect("packet", game, seed, key);
-    if (trace?.keyed) return { kind: "packet", readings, error: SeedTrace.packetFailure(trace) };
-    return { readings, error: "This seed has no keyed Force fit reading for the entered secret key." };
+    return { readings };
   }
 
   function readingsPerPage() {
@@ -336,19 +265,14 @@
     byId("explain-method").hidden = view !== "encode";
     byId("all-readings").hidden = true;
     byId("readings").hidden = true;
-    byId("recovery-row").hidden = true;
+    variantLabel.hidden = true;
     byId("roll").hidden = !PRESETS[game].roll;
-    byId("encode-key").hidden = !ForceFit.hasSpace(game);
     if (view === "keypad") {
       renderPhone();
       return;
     }
     if (view === "encode") renderEncoding();
     else renderDecoding();
-    const keyButton = byId(view + "-key");
-    const usesEnteredKey = view === "decode" || (methodSelect.value === "fit" && !encoding?.key);
-    keyButton.toggleAttribute("data-key", Boolean(keys[view]) && usesEnteredKey);
-    keyButton.setAttribute("aria-label", keys[view] ? "Change secret key" : "Secret key");
     updateCopyButtons();
   }
 
@@ -362,7 +286,7 @@
   function useGame(format) {
     game = format;
     gameSelect.value = game;
-    encodeMethod = keys.encode && ForceFit.hasSpace(game) ? "fit" : undefined;
+    encodeFamily = undefined;
     encodeId = undefined;
     rolledSeeds.clear();
   }
@@ -374,48 +298,41 @@
 
   function detectGame() {
     const seed = seedInput.value;
-    const key = keys.decode;
-    const format = ForceFit.recoveryGame(key);
-    if (format && format !== game && ForceFit.readRecovery(seed, key) !== null) useGame(format);
-    else if (/^[~!+*][0-9A-Za-z]{9}$/.test(seed) && (game === "none" || PRESETS[game].validate(seed))) {
+    if (/^[~!][0-9A-Za-z]{9}$/.test(seed) && (game === "none" || validateSeed(seed))) {
       useGame("valheim");
     }
   }
 
-  function tracePacked(kind, seed, key, reverse, variant, error) {
-    const trace = ForceFit.inspect(kind, game, seed, key, variant);
+  function tracePacked(kind, seed, reverse, variant, error) {
+    const trace = PackedText.inspect(kind, game, seed, variant);
     if (!trace) return [SeedTrace.page("Keyword unavailable", error, [["Seed", JSON.stringify(seed)]])];
     if (kind === "packet") return SeedTrace.packetPages(trace, reverse);
-    if (kind === "recovery") return SeedTrace.recoveryPages(trace, reverse, error);
     return SeedTrace.legacyPages(trace);
   }
 
   function traceEncoding() {
+    const keyword = keywordInput.value;
     if (!encoding) {
-      const id = methodSelect.value;
-      const keyword = keywordInput.value;
-      const { reason, attempted } = unavailable.get(id) ?? {};
-      const pages = [reason && keyword
-        ? SeedTrace.page("Seed unavailable", reason,
+      const { id, family, label, message, attempted } = encodingFailure();
+      const kind = family === "packed" ? "packet" : undefined;
+      const pages = [message && keyword
+        ? SeedTrace.page(encodings.length ? "Seed unavailable" : "No encoding fits", message,
           attempted ? [["Attempted seed", JSON.stringify(attempted)]] : [])
         : SeedTrace.page("Keyword", "Enter a keyword to see the calculation.", [])];
-      if (attempted !== undefined) pages.push(...SeedTrace.direct(id, keyword, attempted, false, game));
-      return { label: methodOptions[id]?.text ?? "Methods", pages };
+      if (!kind && attempted !== undefined) pages.push(...SeedTrace.direct(id, keyword, attempted, false, game));
+      return { label: label ?? FAMILIES[methodSelect.value].label, kind, pages };
     }
-    const { id, method, value, key, label } = encoding;
-    const kind = key ? "recovery" : method === "fit" ? "packet" : null;
-    if (kind) return { label, kind, pages: tracePacked(kind, value, key ?? keys.encode, false) };
-    const pages = SeedTrace.direct(id, keywordInput.value, value, false, game);
-    if (keys.encode && ForceFit.hasSpace(game)) pages[0].note += " The entered secret key applies to Force fit.";
-    return { label, pages };
+    const { id, family, value, label } = encoding;
+    if (family === "packed") return { label, kind: "packet", pages: tracePacked("packet", value, false) };
+    return { label, pages: SeedTrace.direct(id, keyword, value, false, game) };
   }
 
   function traceDecoding() {
     const { active, error, formatError, readings } = decoding;
     const seed = seedInput.value;
     const kind = active ? active.kind : decoding.kind;
-    const label = active?.label ?? (kind ? "Force fit" : "Readings");
-    const pages = kind ? tracePacked(kind, seed, keys.decode, true, active?.variant, error)
+    const label = active?.label ?? (kind ? "Packed text" : "Readings");
+    const pages = kind ? tracePacked(kind, seed, true, active?.variant, error)
       : active ? SeedTrace.direct(active.method ?? active.id, active.value, seed, true, game)
         : [SeedTrace.page("Seed", error || (readings.length ? "Choose a reading to see its calculation." : "No reading matches this seed."),
           [["Input", JSON.stringify(seed)], ["Possible readings", readings.length]])];
@@ -448,39 +365,17 @@
     const { label, kind, pages } = view === "encode" ? traceEncoding() : traceDecoding();
     tracePages = pages;
     if (view === "encode") {
-      const blocked = [...unavailable].map(([id, { reason }]) => [id === "fit" ? "Force fit" : methodOptions[id].text, reason]);
+      const blocked = failures.map(({ label, reason }) => [label, reason]);
       for (let i = 0; i < blocked.length; i += 4) {
         tracePages.push(SeedTrace.page("Method constraints", PRESETS[game].label, blocked.slice(i, i + 4)));
       }
     }
     traceIndex = 0;
     byId("method-title").textContent = label;
-    const source = kind ? "force-fit.js" : "seed-core.js";
+    const source = kind ? "packed-text.js" : "seed-core.js";
     byId("trace-source").href = document.querySelector('script[src^="' + source + '"]').src;
     renderTrace();
     byId("method-dialog").showModal();
-  }
-
-  function editKey() {
-    keyInput.value = keys[view];
-    byId("generate-key").hidden = view !== "encode";
-    updateCopyButtons();
-    byId("key-dialog").showModal();
-  }
-
-  function applyKey(event) {
-    event.preventDefault();
-    keys[view] = keyInput.value;
-    if (view === "encode") {
-      if (keys.encode) encodeMethod = "fit";
-      encodeId = undefined;
-      rolledSeeds.clear();
-    } else {
-      detectGame();
-      resetDecoding();
-    }
-    byId("key-dialog").close();
-    render();
   }
 
   async function copyText(text) {
@@ -516,7 +411,7 @@
     if (!value) return;
     const copied = await copyText(value);
     if (input.value !== value) return;
-    const status = byId(input === keyInput ? "key-copy-status" : "copy-status");
+    const status = byId("copy-status");
     status.textContent = copied ? "Copied." : "Select Copy.";
     if (copied) {
       button.setAttribute("data-copied", "");
@@ -595,7 +490,7 @@
   });
   methodSelect.addEventListener("change", () => {
     if (methodSelect.selectedOptions[0] && !methodSelect.selectedOptions[0].disabled) {
-      encodeMethod = methodSelect.value;
+      encodeFamily = methodSelect.value;
       encodeId = undefined;
     }
     render();
@@ -604,15 +499,6 @@
   byId("explain-decoding").addEventListener("click", explainMethod);
   byId("trace-prev").addEventListener("click", () => { traceIndex--; renderTrace(); });
   byId("trace-next").addEventListener("click", () => { traceIndex++; renderTrace(); });
-  byId("encode-key").addEventListener("click", editKey);
-  byId("decode-key").addEventListener("click", editKey);
-  byId("key-form").addEventListener("submit", applyKey);
-  keyInput.addEventListener("input", updateCopyButtons);
-  byId("generate-key").addEventListener("click", () => {
-    const bytes = crypto.getRandomValues(new Uint8Array(8));
-    keyInput.value = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    updateCopyButtons();
-  });
   for (const button of copies) button.addEventListener("click", () => copyValue(button));
 
   byId("choose-seed").addEventListener("click", chooseSeed);

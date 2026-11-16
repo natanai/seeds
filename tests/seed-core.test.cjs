@@ -1,8 +1,9 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput,
-  translationError } = require("../seed-core.js");
-const ForceFit = require("../force-fit.js");
+  translationError, inspectEncodings, FAMILIES } = require("../seed-core.js");
+const PackedText = require("../packed-text.js");
+const pack = (game, keyword) => PackedText.encode(game, keyword).filter(({ seed }) => seed);
 const accepts = (game, seed) => PRESETS[game].validate(seed) === "";
 
 test("the original encodings produce the same decimal seeds", () => {
@@ -69,7 +70,7 @@ test("Valheim measures length in the game's seed field units", () => {
 test("seed format failures name the mismatched size, symbol, range, or check", () => {
   const nothing = METHODS.fixed.encode("nothing");
   assert.equal(nothing, "14152008091407");
-  const isaac = ForceFit.encodeRecovery("isaac", "abc")[0].seed;
+  const isaac = pack("isaac", "ab")[0].seed;
   const badIsaac = isaac.slice(0, -1) + (isaac.endsWith("B") ? "C" : "B");
   for (const [game, seed, reason] of [
     ["valheim", nothing, /14 digits.*10 characters/],
@@ -156,41 +157,39 @@ test("look-alikes, casing and reverse put every character back in decoding", () 
   assert.equal(METHODS.lowerLookalikes.decode("34"), "ea");
   assert.equal(METHODS.fixed.decode("0501"), "EA");
 });
-test("Force fit produces self-contained seeds within each game’s format", () => {
-  for (const game of Object.keys(PRESETS).filter(ForceFit.hasSpace)) {
-    const variants = ForceFit.encodeVariants(game, "ab");
+test("packed text produces self-contained seeds within each game’s format", () => {
+  for (const game of Object.keys(PRESETS).filter(PackedText.hasSpace)) {
+    const variants = pack(game, "ab");
     assert.ok(variants.length >= 2, game);
     assert.equal(new Set(variants.map(({ seed }) => seed)).size, variants.length, game);
     for (const { seed, label } of variants) {
       assert.ok(accepts(game, seed), game);
-      const reading = ForceFit.readPacket(game, seed);
+      const reading = PackedText.readPacket(game, seed);
       assert.equal(reading.keyword, "ab", game);
       assert.equal(reading.label, label, game);
-      if (game === "isaac") assert.ok(ForceFit.validIsaacSeed(seed));
     }
-    assert.deepEqual(ForceFit.encodeVariants(game, "A phrase beyond the capacity of these seed fields 🐾".repeat(3)), []);
+    assert.deepEqual(pack(game, "A phrase beyond the capacity of these seed fields 🐾".repeat(3)), []);
   }
-  assert.equal(ForceFit.validIsaacSeed("12345678"), false);
 });
 
 test("the reported Valheim keyword decodes straight from each new seed", () => {
   for (const input of ["loving kindness", "Loving Kindness", "loving home", "É!", "ab ", "\ufeffa"]) {
-    const variants = ForceFit.encodeVariants("valheim", input);
+    const variants = pack("valheim", input);
     assert.ok(variants.length >= 2, input);
-    assert.deepEqual(variants, ForceFit.encodeVariants("valheim", input));
+    assert.deepEqual(variants, pack("valheim", input));
     for (const { seed } of variants) {
       assert.equal(seed.length, 10);
-      assert.equal(ForceFit.readPacket("valheim", seed).keyword, input);
+      assert.equal(PackedText.readPacket("valheim", seed).keyword, input);
     }
   }
-  assert.deepEqual(ForceFit.readLegacy("valheim", "~KY0cTpmgx"), { readings: [], olderCode: true });
-  assert.equal(ForceFit.readLegacy("valheim", "~ErI6374JZ").readings.find((entry) => entry.variant === 1).keyword,
+  assert.deepEqual(PackedText.readLegacy("valheim", "~KY0cTpmgx"), { readings: [], olderCode: true });
+  assert.equal(PackedText.readLegacy("valheim", "~ErI6374JZ").readings.find((entry) => entry.variant === 1).keyword,
     "loving home");
 });
 
 test("the screenshot seeds expose different stored recipe IDs and preserve the trailing space", () => {
-  const backward = ForceFit.inspect("packet", "valheim", "!1gd3JFT00");
-  const forward = ForceFit.inspect("packet", "valheim", "!FOpoZjkTu");
+  const backward = PackedText.inspect("packet", "valheim", "!1gd3JFT00");
+  const forward = PackedText.inspect("packet", "valheim", "!FOpoZjkTu");
   assert.equal(backward.keyword, "november ");
   assert.equal(forward.keyword, backward.keyword);
   assert.equal(backward.text.ordered, " rebmevon");
@@ -206,62 +205,47 @@ test("the screenshot seeds expose different stored recipe IDs and preserve the t
   }
 });
 
-test("inspection exposes the offset of an entered key and the bytes of a generated key", () => {
-  const keyed = ForceFit.inspect("packet", "valheim", "+sZRrICqlu", "love");
-  assert.equal(keyed.keyword, "cozy home");
-  assert.equal(keyed.keyHash.text, '["valheim","love"]');
-  assert.equal(keyed.shift, keyed.keyHash.hash % keyed.capacity);
-  assert.equal((keyed.packet + keyed.shift) % keyed.capacity, keyed.encoded);
-  const { key, seed } = ForceFit.encodeRecovery("lego", "00 (202) 555-0199")[3];
-  const split = ForceFit.inspect("recovery", "lego", seed, key);
-  assert.equal(split.keyword, "00 (202) 555-0199");
-  assert.equal(split.bytes[0], Number(split.slot.index % 256n));
-  assert.equal(split.expected, split.slot.index);
-  assert.equal(split.key, key);
+test("packing reports the first rejected symbol or the exact rank that overflows", () => {
+  const attempts = PackedText.encode("valheim", "Amélie 01234567890");
+  assert.equal(attempts.length, 6);
+  assert.equal(attempts.some(({ seed }) => seed), false);
+  assert.match(attempts.find(({ label }) => label === "Dictionary").reason, /"Amélie" has no entry/);
+  assert.match(attempts.find(({ label }) => label === "Base 27").reason, /"A" has no digit/);
+  assert.match(attempts.find(({ label }) => label === "UTF-8").reason, /\d+ bytes.*rank \d+.*holds up to \d+/);
+  for (const { reason } of PackedText.encode("valheim", "\udc00\ud800").filter(({ mode }) => mode === "text")) {
+    assert.match(reason, /incomplete Unicode character/);
+  }
 });
 
-test("a custom or generated key unlocks the exact keyword for the right seed", () => {
-  for (const game of ["valheim", "going-medieval"]) {
-    for (const key of ["love", "af0edc324a1b23f0"]) {
-      const variants = ForceFit.encodeVariants(game, "cozy home", key);
-      assert.deepEqual(variants, ForceFit.encodeVariants(game, "cozy home", key));
-      assert.ok(variants.length >= 2);
-      for (const { seed } of variants) {
-        assert.ok(accepts(game, seed), game);
-        assert.equal(ForceFit.readPacket(game, seed, key).keyword, "cozy home");
-        assert.equal(ForceFit.readPacket(game, seed)?.keyword, undefined);
-        assert.equal(ForceFit.readPacket(game, seed, "wrong")?.keyword, undefined);
+test("encoding families expose valid variants and explain failed attempts", () => {
+  assert.deepEqual(Object.keys(FAMILIES), ["literal", "keypad", "alphabet", "base36", "transforms", "packed"]);
+  const valheim = inspectEncodings("valheim", "nothing");
+  const fixed = valheim.failures.find(({ id }) => id === "fixed");
+  assert.equal(fixed.family, "alphabet");
+  assert.equal(fixed.attempted, "14152008091407");
+  assert.match(fixed.reason, /14 digits.*10 characters/);
+  assert.ok(valheim.choices.some(({ family }) => family === "packed"));
+  assert.ok(inspectEncodings("none", "a").disabled.has("packed"));
+  assert.equal(inspectEncodings("lego", "ab").disabled.size, 0);
+  assert.equal(inspectEncodings("lego", "ab").failures.find(({ id }) => id === "separated").attempted, "1-2");
+
+  const long = "Amélie (202) 555-0199 with the house keys";
+  const unavailable = inspectEncodings("valheim", long);
+  assert.deepEqual(unavailable.choices, []);
+  assert.ok(unavailable.failures.every(({ reason }) => reason));
+
+  for (const game of Object.keys(PRESETS)) {
+    for (const keyword of ["n", "nAt", "A B", "001", "amélie", "loving kindness", long]) {
+      for (const { id, family, value } of inspectEncodings(game, keyword).choices) {
+        assert.ok(accepts(game, value), game + "/" + id);
+        const method = METHODS[id];
+        const stored = canonicalSeed(game, value);
+        const reading = family === "packed" ? PackedText.readPacket(game, value)?.keyword
+          : method ? method.decode(methodInput(game, id, stored)) : stored;
+        assert.ok(matchesReading(method, reading, keyword), game + "/" + id);
       }
     }
   }
-  assert.equal(ForceFit.readPacket("going-medieval", "unreadable"), null);
-});
-
-test("generated keys and seeds together preserve arbitrary keywords", () => {
-  const inputs = [
-    "00 (202) 555-0199",
-    "  Amélie O’Neil  \n🌿 家 \t +#/",
-    "a long keyword ".repeat(100) + "\ud800"
-  ];
-  for (const game of Object.keys(PRESETS).filter(ForceFit.hasSpace)) {
-    for (const input of inputs) {
-      const variants = ForceFit.encodeRecovery(game, input);
-      assert.deepEqual(variants, ForceFit.encodeRecovery(game, input));
-      assert.ok(variants.length > 1, game);
-      assert.equal(new Set(variants.map(({ seed }) => seed)).size, variants.length, game);
-      for (const { seed, key } of variants) {
-        assert.ok(accepts(game, seed), game);
-        if (game === "isaac") assert.ok(ForceFit.validIsaacSeed(seed));
-        if (game === "spelunky2") assert.match(seed, /^[0-9A-F]{8}$/);
-        assert.equal(ForceFit.recoveryGame(key), game);
-        assert.equal(ForceFit.readRecovery(seed, key), input, game);
-        assert.equal(ForceFit.readRecovery(seed, ""), null);
-      }
-      assert.equal(ForceFit.readRecovery(variants[0].seed, variants[1].key), null);
-    }
-  }
-  assert.deepEqual(ForceFit.encodeRecovery("valheim", ""), []);
-  assert.equal(ForceFit.readRecovery("1", "r1.valheim.0.invalid"), null);
 });
 
 test("rotating a keyword reverses exactly, including spaces and emoji", () => {
@@ -289,7 +273,7 @@ test("existing preset limits remain available", () => {
   assert.ok(accepts("deadcells", "123456"));
   assert.ok(accepts("terraria", "123456"));
   assert.equal(accepts("isaac", "12345678"), false);
-  assert.ok(accepts("isaac", ForceFit.encodeRecovery("isaac", "look")[0].seed));
+  assert.ok(accepts("isaac", pack("isaac", "ab")[0].seed));
   assert.ok(accepts("spelunky2", "ABCDEF08"));
   assert.equal(accepts("spelunky2", "ABCDEFGH"), false);
 });
