@@ -182,7 +182,6 @@ textarea.entry {
   border: 1px solid currentColor;
   font: bold 10px/1 "Times New Roman", serif;
 }
-.done { display: none; }
 #method-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -372,7 +371,6 @@ dialog h2 { margin: 0; font-size: 1.2rem; }
 }
 
 @container app (max-height: 445px) {
-  #app[data-typing] .done { display: block; }
   #app[data-typing] #roll, #app[data-typing] #map { display: none; }
 }
 

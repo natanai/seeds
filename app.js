@@ -532,9 +532,6 @@
       }
     });
   }
-  for (const button of document.querySelectorAll("[data-done]")) {
-    button.addEventListener("click", () => byId(button.dataset.done).blur());
-  }
   byId("roll").addEventListener("click", () => {
     seedInput.blur();
     seedInput.value = PRESETS[game].roll(crypto);
