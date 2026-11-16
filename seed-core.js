@@ -36,19 +36,24 @@ const SeedTools = (() => {
     return output.replace(/^0+/, "");
   }
 
-  function decodeMultiTap(seed) {
+  function decodeMultiTap(seed, trace) {
     if (!/^[2-9][02-9]*$/.test(seed)) return "";
     const runs = seed.match(/([02-9])\1*/g);
     let text = "";
     for (const [index, run] of runs.entries()) {
       const key = run[0];
       if (key === "0") {
-        if (run.length === 1 && runs[index - 1][0] === runs[index + 1]?.[0]) continue;
+        if (run.length === 1 && runs[index - 1][0] === runs[index + 1]?.[0]) {
+          trace?.push([run, "same-key separator"]);
+          continue;
+        }
+        trace?.push([run, "␠".repeat(run.length)]);
         text += " ".repeat(run.length);
         continue;
       }
       const letter = KEYMAP[key][run.length - 1];
       if (!letter) return "";
+      trace?.push([run, letter]);
       text += letter;
     }
     return text;
@@ -173,35 +178,40 @@ const SeedTools = (() => {
 
   const METHODS = {
     mtap: {
-      label: "Phone key repeats",
+      label: "Multi-tap (0 separators)",
       encode: encodeMultiTap,
       decode: decodeMultiTap,
-      rule: "Uses repeated phone keys. Zero marks a space or separates letters on the same key."
+      runs(seed) {
+        const trace = [];
+        decodeMultiTap(seed, trace);
+        return trace;
+      },
+      rule: "Repeat the phone key once per tap. A zero separates consecutive letters on the same key, and other zeros encode spaces. Leading zeros are removed. Decode reads runs of equal digits and skips a single zero between matching keys."
     },
     pair: {
-      label: "Keypad pairs",
+      label: "Keypad [key][press]",
       encode: encodePair,
       decode: decodePair,
-      rule: "Uses the phone key followed by its tap count. C becomes 23."
+      rule: "Write the phone key and the 1-based tap count for each letter. Decode consumes two digits per letter. For example, 23 is the third letter on key 2, C."
     },
     fixed: {
-      label: "Two digits per letter",
+      label: "A1Z26 (fixed)",
       encode: (text) => encodeAlphabet(text, ""),
       decode: decodeAlphabetFixed,
-      rule: "Uses two digits for each letter’s place in the alphabet. A becomes 01."
+      rule: "Write the letter’s 1-based alphabet position as two decimal digits, from A = 01 to Z = 26. Decode reads two digits at a time."
     },
     separated: {
-      label: "Letter numbers with dashes",
+      label: "A1Z26 (dashes)",
       usesSeparators: true,
       encode: (text) => encodeAlphabet(text, "-"),
       decode: decodeAlphabetSeparated,
-      rule: "Uses dashes between alphabet positions. SEED becomes 19-5-5-4."
+      rule: "Write each 1-based alphabet position in decimal and join with dashes. Decode accepts dashes, whitespace, or commas between positions."
     },
     base36: {
-      label: "Letters as digits",
+      label: "Base 36 → decimal",
       encode: encodeBase36,
       decode: decodeBase36,
-      rule: "Counts letters as extra digits, with A after 9, then writes the number in ordinary digits."
+      rule: "Use the alphabet 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ. Start at 0 and multiply by 36 before adding each digit’s value. Write the integer in decimal. Decode converts the integer back to base 36."
     },
     upperLookalikes: reversibleMethod("Look-alikes (A↔4)",
       (text) => swapLookalikes(text, lookalikes), "Swap " + pairs),
@@ -211,7 +221,7 @@ const SeedTools = (() => {
       (text) => text.replace(/[A-Za-z]/g, (letter) =>
         letter <= "Z" ? letter.toLowerCase() : letter.toUpperCase()),
       "Switch A–Z to lowercase and a–z to uppercase.", { requiresLetters: true }),
-    reverse: reversibleMethod("Reverse", reverse, "Read the seed characters in reverse order."),
+    reverse: reversibleMethod("Reverse", reverse, "Reverse the Unicode code points. The same reversal restores their order."),
     rotate: reversibleMethod("Rotate characters",
       (text) => {
         const [first, ...rest] = [...text];
@@ -268,7 +278,7 @@ const SeedTools = (() => {
       (!method.requiresLetters || allowsLetters || allowsSeparators));
   }
 
-  return { KEYMAP, METHODS, PRESETS, matchingMethods };
+  return { KEYMAP, METHODS, PRESETS, matchingMethods, normalize };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;

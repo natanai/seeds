@@ -109,10 +109,12 @@ select {
 }
 .field-label {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
+.field-caption { display: flex; align-items: center; min-height: 24px; }
+.field-caption label { margin: 0; }
 .entry { width: 100%; }
 textarea.entry {
   height: var(--control);
@@ -142,7 +144,7 @@ textarea.entry {
 }
 .copy-field textarea { height: calc(var(--control) - 2px); }
 .copy-field :focus-visible { outline-offset: -2px; }
-.copy-button, #explain-method, .key-menu {
+.copy-button, .seed-info, .key-menu {
   width: var(--control);
   padding: 0;
   border: 0;
@@ -172,7 +174,8 @@ textarea.entry {
 }
 .copy-button[data-copied]::after { content: none; }
 .key-menu[data-key] { text-decoration: underline; text-underline-offset: 4px; }
-#explain-method span {
+.seed-info { min-width: 32px; min-height: 24px; }
+.seed-info span {
   display: inline-grid;
   place-items: center;
   width: 12px;
@@ -183,7 +186,7 @@ textarea.entry {
 .done { display: none; }
 #method-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
 }
@@ -278,8 +281,26 @@ dialog h2 { margin: 0; font-size: 1.2rem; }
   justify-content: space-between;
   gap: 8px;
 }
-#method-dialog p, #method-example { margin-top: 8px; overflow-wrap: anywhere; }
-#method-example { display: block; white-space: pre-wrap; }
+#method-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+}
+#trace-body { overflow: auto; overflow-wrap: anywhere; }
+#trace-body h3 { margin: 0 0 6px; font-size: 1rem; }
+#trace-rows { margin: 8px 0 0; }
+#trace-rows dt { font-weight: bold; }
+#trace-rows dd { margin: 0 0 8px; white-space: pre-wrap; }
+#trace-rows code { font-size: .875rem; }
+.trace-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--rule);
+  padding-top: 6px;
+}
+.trace-footer .pager { margin: 0; }
 #key-form, .key-actions { margin-top: 8px; }
 .key-actions button:last-child { margin-inline-start: auto; }
 .clipboard {

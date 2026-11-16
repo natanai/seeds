@@ -7,13 +7,14 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="description" content="Encode and decode game seeds.">
   <title>Meaningful Seeds</title>
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <script defer src="seed-core.js?v=5"></script>
-  <script defer src="force-fit.js?v=5"></script>
-  <script defer src="app.js?v=5"></script>
+  <script defer src="seed-core.js?v=6"></script>
+  <script defer src="force-fit.js?v=6"></script>
+  <script defer src="seed-trace.js?v=6"></script>
+  <script defer src="app.js?v=6"></script>
 </head>
 <body>
   <div id="app">
@@ -39,7 +40,11 @@
 
         <section id="decode-panel" aria-label="Decode" hidden>
           <div class="field-label" id="decode-heading">
-            <label for="seed-input">Seed</label>
+            <div class="field-caption">
+              <label for="seed-input">Seed</label>
+              <button id="explain-decoding" class="seed-info" type="button"
+                aria-label="Explain seed decoding" aria-haspopup="dialog" disabled><span aria-hidden="true">i</span></button>
+            </div>
           </div>
           <div class="input-row">
             <div class="copy-field">
@@ -70,9 +75,6 @@
           <div class="select">
             <select id="method"></select>
           </div>
-          <button id="explain-method" type="button" aria-label="How this seed is made" aria-haspopup="dialog">
-            <span aria-hidden="true">i</span>
-          </button>
           <button id="choose-seed" type="button" aria-label="Choose a seed for me"
             title="Choose a seed for me"><span aria-hidden="true">⚄</span></button>
         </div>
@@ -80,7 +82,11 @@
 
         <div id="value-row">
           <div class="field-label" id="result-heading">
-            <label id="result-label" for="result-value">Seed</label>
+            <div class="field-caption">
+              <label id="result-label" for="result-value">Seed</label>
+              <button id="explain-method" class="seed-info" type="button"
+                aria-label="Explain seed encoding" aria-haspopup="dialog"><span aria-hidden="true">i</span></button>
+            </div>
             <a id="map" target="_blank" rel="noopener" hidden>Map</a>
           </div>
           <div class="copy-field">
@@ -119,9 +125,19 @@
         <h2 id="method-title"></h2>
         <form method="dialog"><button>Close</button></form>
       </header>
-      <p id="method-rule"></p>
-      <p id="method-detail"></p>
-      <code id="method-example" hidden></code>
+      <section id="trace-body" aria-labelledby="trace-title">
+        <h3 id="trace-title"></h3>
+        <p id="trace-note"></p>
+        <dl id="trace-rows"></dl>
+      </section>
+      <footer class="trace-footer">
+        <a id="trace-source" target="_blank" rel="noopener">Source</a>
+        <div class="pager" id="trace-pager">
+          <button id="trace-prev" type="button" aria-label="Previous calculation">&larr;</button>
+          <output id="trace-page" aria-label="Calculation page" aria-live="polite"></output>
+          <button id="trace-next" type="button" aria-label="Next calculation">&rarr;</button>
+        </div>
+      </footer>
     </dialog>
     <dialog id="key-dialog" aria-labelledby="key-title">
       <h2 id="key-title">Secret key</h2>
