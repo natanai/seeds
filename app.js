@@ -1,7 +1,7 @@
 "use strict";
 
 (() => {
-  const { KEYMAP, METHODS, PRESETS, matchingMethods } = SeedTools;
+  const { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings } = SeedTools;
   const byId = (id) => document.getElementById(id);
   const app = byId("app");
   const workspace = byId("workspace");
@@ -34,7 +34,7 @@
 
   let game = preferredGame();
   let view = "encode";
-  let encodeMethod = "literal";
+  let encodeMethod;
   let encodeId;
   let encodings = [];
   let encoding;
@@ -81,72 +81,89 @@
     const canPack = ForceFit.hasSpace(game);
     const compatible = new Map(matchingMethods(game));
     const direct = [];
+    let exactDirect = false;
+    const disabled = new Set();
     unavailable = new Map();
     for (const [id, option] of Object.entries(methodOptions)) {
       if (id === "fit") continue;
       const method = compatible.get(id);
       if (id !== "literal" && !method) {
+        disabled.add(id);
         unavailable.set(id, METHODS[id].usesSeparators
           ? "Requires a seed format that accepts dashes."
           : "Requires a seed format with letters.");
       } else if (key && canPack) {
+        disabled.add(id);
         unavailable.set(id, "An entered secret key uses Force fit.");
       } else if (keyword) {
-        const value = id === "literal" ? keyword : method.encode(keyword);
-        const restored = value && (id === "literal" ? value : method.decode(value));
-        const error = !value ? "Produces no changed result for this keyword."
+        const value = id === "literal" ? keyword : method.encode(keyword) || (method.reversible ? keyword : "");
+        const restored = method && value ? method.decode(value) || (method.reversible ? value : "") : value;
+        const error = !value ? "This method has no seed for this keyword."
           : validateSeed(value) || (game !== "deadcells" && seedIdentity(value) !== value ? "The game drops leading zeroes." : "")
-          || (restored !== keyword ? "Decodes as " + (restored ? JSON.stringify(restored) : "no text") + "." : "")
+          || (!matchesReading(method, restored, keyword)
+            ? "Decodes as " + (restored ? JSON.stringify(restored) : "no text") + "." : "")
           || (!keepsSpelling(value, keyword) ? "The result is reserved for a packed Valheim seed." : "");
         if (error) unavailable.set(id, error);
-        else direct.push({ id, method: id, value, label: option.text });
+        else {
+          direct.push({ id, method: id, value, label: option.text });
+          exactDirect ||= restored === keyword;
+        }
       }
     }
 
-    if (!canPack) unavailable.set("fit", "Choose a game with a defined seed format.");
+    if (!canPack) {
+      disabled.add("fit");
+      unavailable.set("fit", "Choose a game with a defined seed format.");
+    }
     const packed = ForceFit.encodeVariants(game, keyword, key).filter(({ seed }) => !validateSeed(seed))
       .map((recipe) => ({
         id: "fit-" + recipe.number, method: "fit", value: recipe.seed, label: SeedTrace.fitLabel(recipe)
       }));
-    if (direct.length || packed.length) {
-      if (keyword && canPack && !packed.length) unavailable.set("fit", "The keyword exceeds this game’s packed seed space.");
-      return [...direct.filter(({ id }) => id === "literal"), ...packed, ...direct.filter(({ id }) => id !== "literal")];
+    if (keyword && canPack && !packed.length && (encodeMethod === "fit" || !exactDirect)) {
+      packed.push(...ForceFit.encodeRecovery(game, keyword).filter(({ seed }) => !validateSeed(seed))
+        .map(({ seed, key }, index) => ({
+          id: "recovery-" + index, method: "fit", value: seed, key, label: "Force fit · seed + r1 key"
+        })));
     }
-    const split = ForceFit.encodeRecovery(game, keyword).filter(({ seed }) => !validateSeed(seed))
-      .map(({ seed, key }, index) => ({
-        id: "recovery-" + index, method: "fit", value: seed, key, label: "Force fit · seed + r1 key"
-      }));
-    if (keyword && canPack && !split.length) unavailable.set("fit", "No encoding fits this game’s seed format.");
-    return split;
+    if (keyword && canPack && !packed.length) unavailable.set("fit", "The keyword exceeds this game’s packed seed space.");
+    return {
+      disabled,
+      choices: [...direct.filter(({ id }) => id === "literal"), ...packed, ...direct.filter(({ id }) => id !== "literal")]
+    };
   }
 
   function renderEncoding() {
     const keyword = keywordInput.value;
-    const choices = availableEncodings(keyword);
-    encoding = choices.find(({ id, method }) => id === encodeId && method === encodeMethod)
-      ?? choices.find(({ method }) => method === encodeMethod) ?? choices[0];
+    const { choices, disabled } = availableEncodings(keyword);
+    const selectedMethod = disabled.has(encodeMethod) ? undefined : encodeMethod;
+    encoding = selectedMethod
+      ? choices.find(({ id, method }) => id === encodeId && method === selectedMethod)
+        ?? choices.find(({ method }) => method === selectedMethod)
+      : choices[0];
     encodeId = encoding?.id;
     encodings = [...new Map(choices.map((choice) => [seedIdentity(choice.value), choice])).values()];
     for (const [id, option] of Object.entries(methodOptions)) {
-      option.disabled = unavailable.has(id);
+      option.disabled = disabled.has(id);
       option.title = unavailable.get(id) ?? "";
     }
     methodOptions.fit.text = encoding?.method === "fit" ? encoding.label : "Force fit";
-    const fallback = Object.keys(methodOptions).find((id) => !unavailable.has(id));
-    methodSelect.value = encoding?.method ?? (unavailable.has(encodeMethod) ? fallback ?? "" : encodeMethod);
-    byId("choose-seed").disabled = encodings.length < 2;
+    const fallback = Object.keys(methodOptions).find((id) => !disabled.has(id));
+    methodSelect.value = selectedMethod ?? encoding?.method ?? fallback ?? "";
+    const current = seedIdentity(encoding?.value ?? "");
+    byId("choose-seed").disabled = !encodings.some(({ value }) => seedIdentity(value) !== current);
     byId("value-row").hidden = false;
     byId("result-label").textContent = "Seed";
     resultValue.value = encoding?.value ?? "";
     recoveryKey.value = encoding?.key ?? "";
     byId("recovery-row").hidden = !recoveryKey.value;
-    setStatus(keyword && !encoding ? "Check the keyword." : "");
+    setStatus(keyword && !encoding ? unavailable.get(methodSelect.value) ?? "Check the keyword." : "");
     showMap(resultValue.value);
   }
 
   function chooseSeed() {
-    const current = seedIdentity(encoding.value);
+    const current = seedIdentity(encoding?.value ?? "");
     const alternatives = encodings.filter(({ value }) => seedIdentity(value) !== current);
+    if (!alternatives.length) return;
     rolledSeeds.add(current);
     let pool = alternatives.filter(({ value }) => !rolledSeeds.has(seedIdentity(value)));
     if (!pool.length) {
@@ -196,7 +213,10 @@
     methods.sort(([, left], [, right]) => Number(Boolean(right.reversible)) - Number(Boolean(left.reversible)));
     for (const [id, method] of methods) {
       const value = method.decode(seed);
-      if (value) readings.push({ id, label: method.label, value });
+      if (!value) continue;
+      caseReadings(method, value).forEach((reading, index) => {
+        readings.push({ id: index ? id + "-" + index : id, method: id, label: method.label, value: reading });
+      });
     }
     return { readings, error: error || (key && !packet?.keyed ? "Check seed and key." : "") };
   }
@@ -328,7 +348,7 @@
   function useGame(format) {
     game = format;
     gameSelect.value = game;
-    encodeMethod = keys.encode && ForceFit.hasSpace(game) ? "fit" : "literal";
+    encodeMethod = keys.encode && ForceFit.hasSpace(game) ? "fit" : undefined;
     encodeId = undefined;
     rolledSeeds.clear();
   }
@@ -357,7 +377,17 @@
   }
 
   function traceEncoding() {
-    if (!encoding) return { label: "Methods", pages: [SeedTrace.page("Keyword", "Enter a keyword to see the calculation.", [])] };
+    if (!encoding) {
+      const id = methodSelect.value;
+      const keyword = keywordInput.value;
+      const attempted = id === "literal" ? keyword : METHODS[id]?.encode(keyword);
+      const pages = [keyword
+        ? SeedTrace.page("Seed unavailable", unavailable.get(id) ?? "Check the keyword.",
+          attempted ? [["Attempted seed", JSON.stringify(attempted)]] : [])
+        : SeedTrace.page("Keyword", "Enter a keyword to see the calculation.", [])];
+      if (attempted) pages.push(...SeedTrace.direct(id, keyword, attempted, false));
+      return { label: methodOptions[id]?.text ?? "Methods", pages };
+    }
     const { id, method, value, key, label } = encoding;
     const kind = key ? "recovery" : method === "fit" ? "packet" : null;
     return { label, kind, pages: kind ? tracePacked(kind, value, key ?? keys.encode, false)
@@ -371,7 +401,7 @@
     if (kind) {
       return { label: active?.label ?? "Force fit", kind, pages: tracePacked(kind, seed, keys.decode, true, active?.variant) };
     }
-    if (active) return { label: active.label, pages: SeedTrace.direct(active.id, active.value, seed, true) };
+    if (active) return { label: active.label, pages: SeedTrace.direct(active.method ?? active.id, active.value, seed, true) };
     return { label: "Readings", pages: [SeedTrace.page("Seed",
       readings.length ? "Choose a reading to see its calculation. A seed can have several readings."
         : error || "No reading matches this seed.",
@@ -405,12 +435,13 @@
     if (view === "encode") {
       const blocked = [...unavailable].map(([id, reason]) => [id === "fit" ? "Force fit" : methodOptions[id].text, reason]);
       for (let i = 0; i < blocked.length; i += 4) {
-        tracePages.push(SeedTrace.page("Unavailable methods", PRESETS[game].label, blocked.slice(i, i + 4)));
+        tracePages.push(SeedTrace.page("Method constraints", PRESETS[game].label, blocked.slice(i, i + 4)));
       }
     }
     traceIndex = 0;
     byId("method-title").textContent = label;
-    byId("trace-source").href = kind ? "force-fit.js?v=6" : "seed-core.js?v=6";
+    const source = kind ? "force-fit.js" : "seed-core.js";
+    byId("trace-source").href = document.querySelector('script[src^="' + source + '"]').src;
     renderTrace();
     byId("method-dialog").showModal();
   }

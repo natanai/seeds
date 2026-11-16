@@ -211,7 +211,7 @@ const SeedTrace = (() => {
 
   function direct(id, keyword, seed, decoding) {
     const method = SeedTools.METHODS[id];
-    const rule = method?.rule ?? "The seed is the keyword as typed, with the same characters and order.";
+    let rule = method?.rule ?? "The seed is the keyword as typed, with the same characters and order.";
     const source = decoding ? seed : keyword;
     const result = decoding ? keyword : seed;
     const rows = [[decoding ? "Seed" : "Keyword", quoted(source)]];
@@ -230,6 +230,11 @@ const SeedTrace = (() => {
         rows.push(["Values of the base 36 digits", [...keyword.replace(/^-/, "")].map((digit) => parseInt(digit, 36)).join(", ")]);
       } else if (id !== "mtap") {
         rows.push(["Character ↔ code", [...letters].map((letter) => letter + " ↔ " + method.encode(letter)).join("   ")]);
+      }
+      const canonical = method.ignoresCase ? method.decode(seed) : "";
+      if (/[A-Z]/.test(canonical)) {
+        rule += " Either case gives the same code. Each bracket shows the cases that Decode can read at that position.";
+        rows.push(["Possible casing", canonical.replace(/[A-Z]/g, (letter) => "[" + letter + letter.toLowerCase() + "]")]);
       }
     }
     if (id === "reverseLookalikes") {

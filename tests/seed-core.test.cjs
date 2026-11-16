@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { METHODS, PRESETS, matchingMethods } = require("../seed-core.js");
+const { METHODS, PRESETS, matchingMethods, matchesReading, caseReadings } = require("../seed-core.js");
 const ForceFit = require("../force-fit.js");
 const accepts = (game, seed) => PRESETS[game].validate(seed) === "";
 
@@ -25,6 +25,24 @@ test("decode keeps unambiguous spaces and checks whole numbers", () => {
   assert.equal(METHODS.fixed.decode("seed23"), "");
   assert.equal(METHODS.separated.decode("5 14,2-25"), "ENBY");
   assert.equal(METHODS.base36.decode("-36"), "-10");
+});
+
+test("case-insensitive methods accept lowercase without hiding what the seed drops", () => {
+  for (const [name, expected] of Object.entries({ mtap: "66", pair: "62", fixed: "14", separated: "14", base36: "23" })) {
+    const method = METHODS[name];
+    const seed = method.encode("n");
+    const reading = method.decode(seed);
+    assert.equal(seed, expected, name);
+    assert.ok(accepts("valheim", seed), name);
+    assert.ok(matchesReading(method, reading, "n"), name);
+    assert.deepEqual(caseReadings(method, reading), ["N", "n"], name);
+    assert.equal(matchesReading(method, reading, "n "), false, name);
+    assert.equal(matchesReading(method, reading, "n!"), false, name);
+  }
+  assert.ok(matchesReading(METHODS.fixed, "NAT", "nAt"));
+  assert.deepEqual(caseReadings(METHODS.fixed, "NAT"), ["NAT", "nat", "Nat"]);
+  assert.equal(matchesReading(METHODS.fixed, "S", "ſ"), false);
+  assert.equal(matchesReading(METHODS.reverse, "N", "n"), false);
 });
 
 test("Valheim measures length in the game's seed field units", () => {
