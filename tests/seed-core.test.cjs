@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { METHODS, PRESETS, matchingMethods, matchesReading, caseReadings } = require("../seed-core.js");
+const { METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput } = require("../seed-core.js");
 const ForceFit = require("../force-fit.js");
 const accepts = (game, seed) => PRESETS[game].validate(seed) === "";
 
@@ -25,6 +25,19 @@ test("decode keeps unambiguous spaces and checks whole numbers", () => {
   assert.equal(METHODS.fixed.decode("seed23"), "");
   assert.equal(METHODS.separated.decode("5 14,2-25"), "ENBY");
   assert.equal(METHODS.base36.decode("-36"), "-10");
+});
+
+test("multi-tap distinguishes an actual space between letters that share a key", () => {
+  assert.equal(METHODS.mtap.encode("AB"), "2022");
+  assert.equal(METHODS.mtap.decode("2022"), "AB");
+  assert.equal(METHODS.mtap.encode("A B"), "2122");
+  assert.equal(METHODS.mtap.decode("2122"), "A B");
+  assert.equal(METHODS.mtap.encode("A  B"), "20022");
+  assert.equal(METHODS.mtap.decode("20022"), "A  B");
+  for (const text of ["A B C", "G H I G", "R S  T", "D  E "]) {
+    assert.equal(METHODS.mtap.decode(METHODS.mtap.encode(text)), text);
+  }
+  assert.equal(METHODS.mtap.decode("213"), "");
 });
 
 test("case-insensitive methods accept lowercase without hiding what the seed drops", () => {
@@ -63,12 +76,27 @@ test("Going Medieval supports unsigned seed values", () => {
 test("method choices follow the preset’s seed syntax", () => {
   for (const game of Object.keys(PRESETS)) {
     const methods = matchingMethods(game).map(([id]) => id);
-    assert.equal(methods.includes("separated"), ["none", "valheim", "terraria"].includes(game), game);
+    assert.equal(methods.includes("separated"), !["isaac", "sts", "spelunky2", "deadcells"].includes(game), game);
     assert.ok(methods.includes("fixed"), game);
     assert.ok(methods.includes("upperLookalikes"), game);
     assert.equal(methods.includes("flipCase"),
       ["none", "valheim", "terraria", "isaac", "sts", "spelunky2"].includes(game), game);
   }
+});
+
+test("numeric games can read fixed A1Z26 after the game drops a leading zero", () => {
+  for (const game of ["going-medieval", "lego", "midjourney", "minecraft", "factorio"]) {
+    for (const text of ["a", "ab", "cat", "NAT"]) {
+      const seed = METHODS.fixed.encode(text);
+      const decimal = canonicalSeed(game, seed);
+      assert.ok(accepts(game, seed), game);
+      assert.equal(methodInput(game, "fixed", decimal), seed, game);
+      assert.ok(matchesReading(METHODS.fixed, METHODS.fixed.decode(methodInput(game, "fixed", decimal)), text), game);
+    }
+    assert.equal(methodInput(game, "separated", "1"), "1");
+  }
+  assert.equal(methodInput("valheim", "fixed", "1"), "1");
+  assert.equal(canonicalSeed("deadcells", "010101"), "010101");
 });
 
 test("look-alikes, casing and reverse put every character back in decoding", () => {
@@ -217,5 +245,8 @@ test("existing preset limits remain available", () => {
   assert.equal(accepts("minecraft", "9223372036854775808"), false);
   assert.ok(accepts("deadcells", "123456"));
   assert.ok(accepts("terraria", "123456"));
-  assert.ok(accepts("isaac", "12345678"));
+  assert.equal(accepts("isaac", "12345678"), false);
+  assert.ok(accepts("isaac", ForceFit.encodeRecovery("isaac", "look")[0].seed));
+  assert.ok(accepts("spelunky2", "ABCDEF08"));
+  assert.equal(accepts("spelunky2", "ABCDEFGH"), false);
 });
