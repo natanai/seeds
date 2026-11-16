@@ -5,16 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="description" content="Encode keywords into game seeds, recover the original text and keep a list of worlds to try.">
+  <meta name="description" content="Encode and decode game seeds.">
   <title>Meaningful Seeds</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=5">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <script defer src="seed-core.js"></script>
-  <script defer src="force-fit.js"></script>
-  <script defer src="examples.js"></script>
-  <script defer src="app.js"></script>
+  <script defer src="seed-core.js?v=5"></script>
+  <script defer src="force-fit.js?v=5"></script>
+  <script defer src="app.js?v=5"></script>
 </head>
 <body>
   <div id="app">
@@ -31,19 +30,24 @@
         <section id="encode-panel" aria-label="Encode">
           <label for="keyword">Keyword</label>
           <div class="input-row">
-            <input id="keyword" class="entry" type="text" placeholder="e.g. moss home"
-              autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
-            <button id="encode-key" type="button" aria-haspopup="dialog">Key</button>
+            <textarea id="keyword" class="entry" rows="1"
+              autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"></textarea>
+            <button id="encode-key" class="key-menu" type="button" aria-label="Secret key" aria-haspopup="dialog">…</button>
             <button class="done" type="button" data-done="keyword">Done</button>
           </div>
         </section>
 
         <section id="decode-panel" aria-label="Decode" hidden>
-          <label for="seed-input">Seed</label>
+          <div class="field-label" id="decode-heading">
+            <label for="seed-input">Seed</label>
+          </div>
           <div class="input-row">
-            <input id="seed-input" class="entry" type="text" placeholder="Paste a seed or share link"
-              autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
-            <button id="decode-key" type="button" aria-haspopup="dialog">Key</button>
+            <div class="copy-field">
+              <textarea id="seed-input" class="entry" rows="1"
+                autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"></textarea>
+              <button class="copy-button" type="button" data-copy="seed-input" aria-label="Copy seed" disabled></button>
+            </div>
+            <button id="decode-key" class="key-menu" type="button" aria-label="Secret key" aria-haspopup="dialog">…</button>
             <button id="roll" type="button" hidden>Roll</button>
             <button class="done" type="button" data-done="seed-input">Done</button>
           </div>
@@ -52,24 +56,12 @@
         <section id="keypad-panel" aria-label="Phone keypad" hidden>
           <div class="keypad-entry">
             <label for="phone-text">Keyword</label>
-            <input id="phone-text" class="entry" type="text" placeholder="Tap a key" readonly>
+            <input id="phone-text" class="entry" type="text" readonly>
             <button id="use-keyword" type="button">Use keyword</button>
-            <p class="hint">Tap again to cycle. Use Next to start another letter on the same key.</p>
           </div>
           <div id="phone-keys" class="phone-keys" aria-label="Keypad"></div>
         </section>
 
-        <section id="seeds-panel" aria-label="Seed library" hidden>
-          <div class="collection" aria-label="Seed collections" role="group">
-            <button type="button" data-collection="examples" aria-pressed="true">Examples</button>
-            <button type="button" data-collection="saved" aria-pressed="false">Saved</button>
-          </div>
-          <div class="pager" id="library-pager">
-            <button id="previous" type="button" aria-label="Previous seed">&larr;</button>
-            <output id="library-count" aria-live="polite"></output>
-            <button id="next" type="button" aria-label="Next seed">&rarr;</button>
-          </div>
-        </section>
       </div>
 
       <section id="result" class="result" aria-label="Result">
@@ -78,60 +70,41 @@
           <div class="select">
             <select id="method"></select>
           </div>
-          <button id="explain-method" type="button" aria-label="How this seed is made"
-            aria-haspopup="dialog" hidden>How?</button>
+          <button id="explain-method" type="button" aria-label="How this seed is made" aria-haspopup="dialog">
+            <span aria-hidden="true">i</span>
+          </button>
           <button id="choose-seed" type="button" aria-label="Choose a seed for me"
             title="Choose a seed for me"><span aria-hidden="true">⚄</span></button>
         </div>
-        <div id="reading-detail" hidden>
-          <button id="all-readings" type="button">All readings</button>
-          <span id="reading-method"></span>
-        </div>
-
-        <div id="map-settings" class="map-settings" hidden>
-          <div class="select">
-            <label class="sr-only" for="terrain">Terrain</label>
-            <select id="terrain"></select>
-          </div>
-          <div class="select">
-            <label class="sr-only" for="map-size">Map size</label>
-            <select id="map-size"></select>
-          </div>
-        </div>
+        <button id="all-readings" type="button" hidden>All readings</button>
 
         <div id="value-row">
-          <label id="result-label" for="result-value">Seed</label>
-          <input id="result-value" class="entry output-value" type="text" placeholder="—" readonly>
-        </div>
-
-        <div class="result-note">
-          <div class="result-description">
-            <p id="variation-name" hidden></p>
-            <p id="result-status" class="hint" role="status"></p>
+          <div class="field-label" id="result-heading">
+            <label id="result-label" for="result-value">Seed</label>
+            <a id="map" target="_blank" rel="noopener" hidden>Map</a>
           </div>
-          <button id="next-variation" type="button" aria-describedby="variation-name" hidden>Variation</button>
-          <a id="source" href="#" target="_blank" rel="noopener" hidden>Source</a>
-          <button id="recover-saved" type="button" hidden>Open keyword</button>
+          <div class="copy-field">
+            <textarea id="result-value" class="entry output-value" rows="1" readonly></textarea>
+            <button class="copy-button" type="button" data-copy="result-value" aria-label="Copy seed" disabled></button>
+          </div>
+        </div>
+        <div id="recovery-row" hidden>
+          <label for="recovery-key">Secret key</label>
+          <div class="copy-field">
+            <input id="recovery-key" class="entry output-value" type="text" readonly>
+            <button class="copy-button" type="button" data-copy="recovery-key" aria-label="Copy key" disabled></button>
+          </div>
         </div>
 
-        <div class="actions" aria-label="Result actions" role="group">
-          <button id="copy" type="button">Copy</button>
-          <button id="save" type="button">Save</button>
-          <button id="share" type="button">Share</button>
-          <a id="map" class="button" href="#" target="_blank" rel="noopener" hidden>Map</a>
-        </div>
+        <p id="result-status" role="status" hidden></p>
         <section id="readings" aria-label="Seed readings" hidden>
-          <div class="readings-header">
-            <strong id="reading-count" role="status"></strong>
-            <div class="pager" id="reading-pager">
-              <button id="reading-previous" type="button" aria-label="Previous readings">&larr;</button>
-              <output id="reading-page" aria-label="Readings page"></output>
-              <button id="reading-next" type="button" aria-label="Next readings">&rarr;</button>
-            </div>
+          <div class="pager" id="reading-pager">
+            <button id="reading-previous" type="button" aria-label="Previous readings">&larr;</button>
+            <output id="reading-page" aria-label="Readings page"></output>
+            <button id="reading-next" type="button" aria-label="Next readings">&rarr;</button>
           </div>
           <div id="reading-list"></div>
         </section>
-        <p id="notice" class="notice" role="status"></p>
       </section>
     </main>
 
@@ -139,7 +112,6 @@
       <button type="button" data-tab="encode" aria-current="page">Encode</button>
       <button type="button" data-tab="decode">Decode</button>
       <button type="button" data-tab="keypad">Keypad</button>
-      <button type="button" data-tab="seeds">Seeds</button>
     </nav>
 
     <dialog id="method-dialog" aria-labelledby="method-title">
@@ -155,22 +127,20 @@
       <h2 id="key-title">Secret key</h2>
       <form id="key-form" method="dialog">
         <label class="sr-only" for="key-input">Secret key</label>
-        <input id="key-input" class="entry" type="text" placeholder="Type a key"
-          autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
-        <p id="key-note" class="hint" role="status"></p>
+        <div class="copy-field">
+          <input id="key-input" class="entry" type="text"
+            autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+          <button class="copy-button" type="button" data-copy="key-input" aria-label="Copy key" disabled></button>
+        </div>
         <div class="key-actions">
-          <button id="generate-key" type="button">Generate key</button>
-          <button id="copy-key" type="button">Copy key</button>
+          <button id="generate-key" type="button" aria-label="Generate key">Generate</button>
           <button type="submit">Done</button>
         </div>
       </form>
+      <p id="key-copy-status" class="sr-only" role="status"></p>
     </dialog>
+    <p id="copy-status" class="sr-only" role="status"></p>
     <noscript>Enable JavaScript to use the seed tools.</noscript>
   </div>
-  <dialog id="share-dialog" aria-labelledby="share-label">
-    <label id="share-label" for="share-url">Seed link</label>
-    <input id="share-url" class="entry" type="text" readonly>
-    <form method="dialog"><button>Close</button></form>
-  </dialog>
 </body>
 </html>
