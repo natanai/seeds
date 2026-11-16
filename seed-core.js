@@ -179,6 +179,7 @@ const SeedTools = (() => {
   const METHODS = {
     mtap: {
       label: "Multi-tap (0 separators)",
+      ignoresCase: true,
       encode: encodeMultiTap,
       decode: decodeMultiTap,
       runs(seed) {
@@ -190,18 +191,21 @@ const SeedTools = (() => {
     },
     pair: {
       label: "Keypad [key][press]",
+      ignoresCase: true,
       encode: encodePair,
       decode: decodePair,
       rule: "Write the phone key and the 1-based tap count for each letter. Decode consumes two digits per letter. For example, 23 is the third letter on key 2, C."
     },
     fixed: {
       label: "A1Z26 (fixed)",
+      ignoresCase: true,
       encode: (text) => encodeAlphabet(text, ""),
       decode: decodeAlphabetFixed,
       rule: "Write the letter’s 1-based alphabet position as two decimal digits, from A = 01 to Z = 26. Decode reads two digits at a time."
     },
     separated: {
       label: "A1Z26 (dashes)",
+      ignoresCase: true,
       usesSeparators: true,
       encode: (text) => encodeAlphabet(text, "-"),
       decode: decodeAlphabetSeparated,
@@ -209,6 +213,7 @@ const SeedTools = (() => {
     },
     base36: {
       label: "Base 36 → decimal",
+      ignoresCase: true,
       encode: encodeBase36,
       decode: decodeBase36,
       rule: "Use the alphabet 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ. Start at 0 and multiply by 36 before adding each digit’s value. Write the integer in decimal. Decode converts the integer back to base 36."
@@ -278,7 +283,20 @@ const SeedTools = (() => {
       (!method.requiresLetters || allowsLetters || allowsSeparators));
   }
 
-  return { KEYMAP, METHODS, PRESETS, matchingMethods, normalize };
+  function matchesReading(method, reading, keyword) {
+    // Only fold ASCII letter case. Spaces, punctuation, and other characters still have to match.
+    return reading === keyword || Boolean(method?.ignoresCase &&
+      reading === keyword.replace(/[a-z]/g, (letter) => letter.toUpperCase()));
+  }
+
+  function caseReadings(method, value) {
+    if (!method.ignoresCase) return [value];
+    const lower = value.toLowerCase();
+    const title = lower.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+    return [...new Set([value, lower, title])];
+  }
+
+  return { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, normalize };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;
