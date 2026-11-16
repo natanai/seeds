@@ -338,11 +338,70 @@ const ForceFit = (() => {
     return marked ? { status: keyed ? "key-mismatch" : "copy-check" } : null;
   }
 
+  const valheimRecovery = alphabetSpace(BASE62, 9, "*");
+  const recoveryKey = /^r1\.([a-z0-9-]+)\.([0-7])\.([A-Za-z0-9_-]*)$/;
+
+  function recoveryGame(key) {
+    const game = recoveryKey.exec(key)?.[1];
+    return hasSpace(game) ? game : null;
+  }
+
+  function needsRecovery(game, seed) {
+    return game === "valheim" && valheimRecovery.read(seed) !== null;
+  }
+
+  // The seed keeps the first byte and a fingerprint of all the text. The key keeps the rest.
+  function recoveryIndex(fingerprint, firstByte, variant, capacity) {
+    const slots = capacity / 256n;
+    const offset = slots * OFFSETS[variant] / 1000n;
+    return (fingerprint + offset) % slots * 256n + BigInt(firstByte);
+  }
+
+  function encodeRecovery(game, keyword) {
+    if (!hasSpace(game) || !keyword) return [];
+    const space = game === "valheim" ? valheimRecovery : spaces[game];
+    const text = JSON.stringify(keyword).slice(1, -1);
+    const bytes = encoder.encode(text);
+    const fingerprint = hash64(encoder.encode(game + "." + text));
+    let tail = "";
+    for (let i = 1; i < bytes.length; i++) tail += String.fromCharCode(bytes[i]);
+    const token = btoa(tail).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return OFFSETS.map((_, variant) => {
+      const index = recoveryIndex(fingerprint, bytes[0], variant, space.capacity);
+      return { seed: space.write(index), key: "r1." + game + "." + variant + "." + token };
+    });
+  }
+
+  function readRecovery(seed, key) {
+    const match = recoveryKey.exec(key);
+    if (!match || !hasSpace(match[1])) return null;
+    const [, game, variant, token] = match;
+    const space = game === "valheim" ? valheimRecovery : spaces[game];
+    const index = space.read(seed);
+    if (index === null || index < 0n || index >= space.capacity) return null;
+    try {
+      const tail = atob(token.replace(/-/g, "+").replace(/_/g, "/"));
+      const bytes = new Uint8Array(tail.length + 1);
+      bytes[0] = Number(index % 256n);
+      for (let i = 0; i < tail.length; i++) bytes[i + 1] = tail.charCodeAt(i);
+      const text = decoder.decode(bytes);
+      const keyword = JSON.parse('"' + text + '"');
+      const fingerprint = hash64(encoder.encode(game + "." + text));
+      return keyword && JSON.stringify(keyword).slice(1, -1) === text &&
+        recoveryIndex(fingerprint, bytes[0], Number(variant), space.capacity) === index ? keyword : null;
+    } catch {
+      return null;
+    }
+  }
+
   function validIsaacSeed(seed) {
     return seedIndex("isaac", seed) !== null;
   }
 
-  return { hasSpace, encodeVariants, readPacket, readLegacy, validIsaacSeed };
+  return {
+    hasSpace, encodeVariants, readPacket, readLegacy, validIsaacSeed,
+    encodeRecovery, readRecovery, recoveryGame, needsRecovery
+  };
 })();
 
 if (typeof module === "object") module.exports = ForceFit;
