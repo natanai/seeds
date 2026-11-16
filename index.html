@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="description" content="Encode phrases into game seeds, decode seed codes and keep a list of worlds to try.">
+  <meta name="description" content="Encode keywords into game seeds, recover the original text and keep a list of worlds to try.">
   <title>Meaningful Seeds</title>
   <link rel="stylesheet" href="style.css">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
   <script defer src="seed-core.js"></script>
+  <script defer src="force-fit.js"></script>
   <script defer src="examples.js"></script>
   <script defer src="app.js"></script>
 </head>
@@ -28,18 +29,18 @@
     <main id="workspace" data-view="encode">
       <div class="editor">
         <section id="encode-panel" aria-label="Encode">
-          <label for="phrase">Phrase</label>
+          <label for="keyword">Keyword</label>
           <div class="input-row">
-            <input id="phrase" class="entry" type="text" placeholder="e.g. MOSS HOME"
+            <input id="keyword" class="entry" type="text" placeholder="e.g. moss home"
               autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
-            <button class="done" type="button" data-done="phrase">Done</button>
+            <button class="done" type="button" data-done="keyword">Done</button>
           </div>
         </section>
 
         <section id="decode-panel" aria-label="Decode" hidden>
           <label for="seed-input">Seed</label>
           <div class="input-row">
-            <input id="seed-input" class="entry" type="text" placeholder="Paste or type a seed"
+            <input id="seed-input" class="entry" type="text" placeholder="Paste a seed or share link"
               autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
             <button id="roll" type="button" hidden>Roll</button>
             <button class="done" type="button" data-done="seed-input">Done</button>
@@ -48,9 +49,9 @@
 
         <section id="keypad-panel" aria-label="Phone keypad" hidden>
           <div class="keypad-entry">
-            <label for="phone-text">Phrase</label>
+            <label for="phone-text">Keyword</label>
             <input id="phone-text" class="entry" type="text" placeholder="Tap a key" readonly>
-            <button id="use-phrase" type="button">Use phrase</button>
+            <button id="use-keyword" type="button">Use keyword</button>
             <p class="hint">Tap again to cycle. Use Next to start another letter on the same key.</p>
           </div>
           <div id="phone-keys" class="phone-keys" aria-label="Keypad"></div>
@@ -75,6 +76,12 @@
           <div class="select">
             <select id="method"></select>
           </div>
+          <button id="explain-method" type="button" aria-label="How this seed is made"
+            aria-haspopup="dialog" hidden>How?</button>
+        </div>
+        <div id="reading-detail" hidden>
+          <button id="all-readings" type="button">All readings</button>
+          <span id="reading-method"></span>
         </div>
 
         <div id="map-settings" class="map-settings" hidden>
@@ -96,6 +103,7 @@
         <div class="result-note">
           <p id="result-status" class="hint" role="status"></p>
           <a id="source" href="#" target="_blank" rel="noopener" hidden>Source</a>
+          <button id="recover-saved" type="button" hidden>Open keyword</button>
         </div>
 
         <div class="actions" aria-label="Result actions" role="group">
@@ -104,6 +112,17 @@
           <button id="share" type="button">Share</button>
           <a id="map" class="button" href="#" target="_blank" rel="noopener" hidden>Map</a>
         </div>
+        <section id="readings" aria-label="Seed readings" hidden>
+          <div class="readings-header">
+            <strong id="reading-count" role="status"></strong>
+            <div class="pager" id="reading-pager">
+              <button id="reading-previous" type="button" aria-label="Previous readings">&larr;</button>
+              <output id="reading-page" aria-label="Readings page"></output>
+              <button id="reading-next" type="button" aria-label="Next readings">&rarr;</button>
+            </div>
+          </div>
+          <div id="reading-list"></div>
+        </section>
         <p id="notice" class="notice" role="status"></p>
       </section>
     </main>
@@ -115,6 +134,15 @@
       <button type="button" data-tab="seeds">Seeds</button>
     </nav>
 
+    <dialog id="method-dialog" aria-labelledby="method-title">
+      <header class="dialog-heading">
+        <h2 id="method-title"></h2>
+        <form method="dialog"><button>Close</button></form>
+      </header>
+      <p id="method-rule"></p>
+      <p id="method-math"></p>
+      <code id="method-example" hidden></code>
+    </dialog>
     <noscript>Enable JavaScript to use the seed tools.</noscript>
   </div>
   <dialog id="share-dialog" aria-labelledby="share-label">

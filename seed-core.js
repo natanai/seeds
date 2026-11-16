@@ -4,6 +4,7 @@ const SeedTools = (() => {
   const U32_MAX = 4294967295n;
   const I64_MIN = -9223372036854775808n;
   const I64_MAX = 9223372036854775807n;
+  const VALHEIM_LIMIT = 10;
   const KEYMAP = {
     "2": "ABC", "3": "DEF", "4": "GHI", "5": "JKL",
     "6": "MNO", "7": "PQRS", "8": "TUV", "9": "WXYZ"
@@ -103,20 +104,51 @@ const SeedTools = (() => {
     return signedInteger.test(seed) ? BigInt(seed).toString(36).toUpperCase() : "";
   }
 
-  // 32-bit FNV-1a over UTF-8. Keep this stable so old phrases produce the same seeds.
-  function hashPhrase(phrase) {
+  function swapLookalikes(text, letters) {
+    return text.replace(/[0-8A-Za-z]/g, (character) => {
+      const index = letters.indexOf(character);
+      if (index >= 0) return String(index);
+      return letters[Number(character)] ?? character;
+    });
+  }
+
+  function reverse(text) {
+    return [...text].reverse().join("");
+  }
+
+  function reversibleMethod(label, transform, steps, requiresLetters = false) {
+    const apply = (text) => {
+      const transformed = transform(text);
+      return transformed === text ? "" : transformed;
+    };
+    return {
+      label, encode: apply, decode: apply, steps, requiresLetters, hint: steps,
+      invalid: "The keyword is identical under this transformation."
+    };
+  }
+
+  const lookalikes = "OIZEASGTB";
+  const pairs = "O↔0, I↔1, Z↔2, E↔3, A↔4, S↔5, G↔6, T↔7, B↔8.";
+
+  // 32-bit FNV-1a over UTF-8. Keep this stable for existing keywords.
+  function hashKeyword(keyword) {
     let hash = 2166136261;
-    for (const byte of new TextEncoder().encode(phrase)) {
+    for (const byte of new TextEncoder().encode(keyword)) {
       hash = Math.imul(hash ^ byte, 16777619);
     }
     return hash >>> 0;
   }
 
-  function valheimPhrase(phrase) {
-    if (!phrase) return "";
-    if (phrase.length <= 10 && !/[\r\n]/.test(phrase)) return phrase;
-    const prefix = phrase.replace(/[^A-Za-z0-9]/g, "").slice(0, 3);
-    return prefix + hashPhrase(phrase).toString(36).toUpperCase().padStart(7, "0");
+  function valheimValidity(seed) {
+    return seed.length <= VALHEIM_LIMIT && !/[\r\n]/.test(seed)
+      ? "" : "Use up to 10 UTF-16 units on one line.";
+  }
+
+  function valheimKeyword(keyword) {
+    if (!valheimValidity(keyword)) return { seed: keyword };
+    const prefix = keyword.replace(/[^A-Za-z0-9]/g, "").slice(0, 3);
+    const suffix = hashKeyword(keyword).toString(36).toUpperCase().padStart(7, "0");
+    return { seed: prefix + suffix, prefix, suffix };
   }
 
   function valheimRoll(random) {
@@ -147,8 +179,8 @@ const SeedTools = (() => {
 
   function isaac(seed) {
     const code = seed.replace(/\s+/g, "").toUpperCase();
-    return code.length === 8 && lettersAndDigits.test(code) && !/[IOUV]/.test(code)
-      ? "" : "Use 8 letters or digits, excluding I, O, U and V.";
+    return code.length === 8 && lettersAndDigits.test(code) && !/[IOU]/.test(code)
+      ? "" : "Use 8 letters or digits, excluding I, O and U.";
   }
 
   function alphanumeric(seed, minimum, maximum) {
@@ -181,6 +213,7 @@ const SeedTools = (() => {
     },
     separated: {
       label: "A1Z26 separated",
+      usesSeparators: true,
       encode: (text) => encodeAlphabet(text, "-"),
       decode: decodeAlphabetSeparated,
       hint: "Alphabet positions with separators. SEED = 19-5-5-4.",
@@ -192,32 +225,48 @@ const SeedTools = (() => {
       decode: decodeBase36,
       hint: "A number with digits 0–9 and letters A–Z.",
       invalid: "Use a decimal integer."
-    }
+    },
+    upperLookalikes: reversibleMethod("Look-alikes (A↔4)",
+      (text) => swapLookalikes(text, lookalikes), "Swap " + pairs),
+    lowerLookalikes: reversibleMethod("Look-alikes (a↔4)",
+      (text) => swapLookalikes(text, lookalikes.toLowerCase()), "Swap " + pairs.toLowerCase()),
+    flipCase: reversibleMethod("Flip case",
+      (text) => text.replace(/[A-Za-z]/g, (letter) =>
+        letter <= "Z" ? letter.toLowerCase() : letter.toUpperCase()),
+      "Switch A–Z to lowercase and a–z to uppercase.", true),
+    reverse: reversibleMethod("Reverse", reverse, "Read the seed characters in reverse order."),
+    reverseLookalikes: reversibleMethod("Reverse + look-alikes",
+      (text) => reverse(swapLookalikes(text, lookalikes)), "Reverse the characters and swap " + pairs)
   };
 
   const PRESETS = {
-    none: { label: "Any format", validate: () => "" },
+    none: { label: "Any format", validate: () => "", allowsSeparators: true },
     valheim: {
       label: "Valheim",
-      validate: (seed) => seed.length <= 10 && !/[\r\n]/.test(seed)
-        ? "" : "Use up to 10 characters on one line.",
-      encode: valheimPhrase,
+      validate: valheimValidity,
+      allowsSeparators: true,
+      keyword: valheimKeyword,
       roll: valheimRoll
     },
     "going-medieval": {
       label: "Going Medieval",
       validate: unsigned32,
       numeric: true,
-      encode: (phrase) => phrase ? String(hashPhrase(phrase)) : "",
+      keyword: (keyword) => ({ seed: keyword ? String(hashKeyword(keyword)) : "" }),
       roll: (random) => String(random.getRandomValues(new Uint32Array(1))[0])
     },
     lego: { label: "LEGO Odyssey", validate: lego, numeric: true },
     midjourney: { label: "Midjourney", validate: unsigned32, numeric: true },
     minecraft: { label: "Minecraft (numeric)", validate: minecraft },
-    terraria: { label: "Terraria", validate: (seed) => seed.trim() ? "" : "Enter a seed." },
-    isaac: { label: "Binding of Isaac", validate: isaac },
-    sts: { label: "Slay the Spire", validate: (seed) => alphanumeric(seed, 8, 16) },
-    spelunky2: { label: "Spelunky 2", validate: (seed) => alphanumeric(seed, 6, 12) },
+    terraria: {
+      label: "Terraria", allowsSeparators: true,
+      validate: (seed) => seed.trim() ? "" : "Enter a seed."
+    },
+    isaac: { label: "Binding of Isaac", validate: isaac, allowsLetters: true },
+    sts: { label: "Slay the Spire", validate: (seed) => alphanumeric(seed, 8, 16), allowsLetters: true },
+    spelunky2: {
+      label: "Spelunky 2", validate: (seed) => alphanumeric(seed, 6, 12), allowsLetters: true
+    },
     deadcells: {
       label: "Dead Cells",
       validate: (seed) => /^\d{6}$/.test(seed) ? "" : "Use 6 digits.",
@@ -225,6 +274,15 @@ const SeedTools = (() => {
     },
     factorio: { label: "Factorio", validate: unsigned32, numeric: true }
   };
+
+  function matchingMethods(game) {
+    // A separated code is a token list, even when a one-letter input has only one token.
+    const { allowsSeparators, allowsLetters } = PRESETS[game];
+    return Object.entries(METHODS).filter(([, method]) =>
+      (!method.usesSeparators || allowsSeparators) &&
+      (!method.requiresLetters || allowsLetters || allowsSeparators));
+  }
+
   function makeSeed(game, seed, settings = {}) {
     if (!Object.hasOwn(PRESETS, game) || typeof seed !== "string" ||
         !seed || PRESETS[game].validate(seed)) return null;
@@ -233,24 +291,52 @@ const SeedTools = (() => {
       if (MAP_TYPES.includes(settings.terrain)) record.terrain = settings.terrain;
       if (MAP_SIZES.includes(settings.size)) record.size = settings.size;
     }
+    if (typeof settings.keyword === "string" && settings.keyword) record.keyword = settings.keyword;
     return record;
   }
 
   function seedKey(record) {
-    return JSON.stringify([record.game, record.seed, record.terrain, record.size]);
+    return JSON.stringify([record.game, record.seed, record.terrain, record.size, record.keyword]);
   }
 
   function seedLink(page, record) {
     const link = new URL(page);
     link.search = "";
     link.hash = "";
-    for (const [key, value] of Object.entries(record)) {
+    const { keyword, ...settings } = record;
+    for (const [key, value] of Object.entries(settings)) {
       link.searchParams.set(key, value);
+    }
+    if (keyword !== undefined) {
+      link.hash = new URLSearchParams({ keyword: JSON.stringify(keyword) }).toString();
     }
     return link.href;
   }
 
-  return { KEYMAP, MAP_TYPES, MAP_SIZES, METHODS, PRESETS, makeSeed, seedKey, seedLink };
+  function readSeedLink(value, page) {
+    try {
+      const link = new URL(value);
+      const home = new URL(page);
+      const path = (url) => url.pathname.replace(/\/index\.html$/, "/");
+      if (link.origin !== home.origin || path(link) !== path(home)) return null;
+
+      const game = link.searchParams.get("game");
+      const seed = link.searchParams.get("seed");
+      const fragment = new URLSearchParams(link.hash.slice(1));
+      let keyword;
+      try { keyword = JSON.parse(fragment.get("keyword")); } catch { /* The seed still opens. */ }
+      return makeSeed(game, seed, {
+        terrain: link.searchParams.get("terrain"), size: link.searchParams.get("size"), keyword
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    KEYMAP, MAP_TYPES, MAP_SIZES, METHODS, PRESETS, VALHEIM_LIMIT,
+    matchingMethods, makeSeed, seedKey, seedLink, readSeedLink
+  };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;
