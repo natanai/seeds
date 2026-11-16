@@ -75,27 +75,53 @@ test("look-alikes, casing and reverse put every character back in decoding", () 
   assert.equal(METHODS.lowerLookalikes.decode("34"), "ea");
   assert.equal(METHODS.fixed.decode("0501"), "EA");
 });
-test("Force fit uses each selected game's format and exactly reverses packed keywords", () => {
-  for (const game of Object.keys(PRESETS).filter((game) => game !== "none")) {
-    const packed = ForceFit.encode(game, "ab");
-    assert.equal(packed.kind, "compact", game);
-    assert.ok(makeSeed(game, packed.seed), game);
-    assert.equal(ForceFit.decode(game, packed.seed).keyword, "ab", game);
+test("Force fit produces self-contained seeds within each game’s format", () => {
+  for (const game of Object.keys(PRESETS).filter(ForceFit.hasSpace)) {
+    const variants = ForceFit.encodeVariants(game, "ab");
+    assert.ok(variants.length >= 2, game);
+    assert.equal(new Set(variants.map(({ seed }) => seed)).size, variants.length, game);
+    for (const { seed, label } of variants) {
+      assert.ok(makeSeed(game, seed), game);
+      const reading = ForceFit.readPacket(game, seed);
+      assert.equal(reading.keyword, "ab", game);
+      assert.equal(reading.label, label, game);
+      if (game === "isaac") assert.ok(ForceFit.validIsaacSeed(seed));
+    }
+    assert.deepEqual(ForceFit.encodeVariants(game, "A phrase beyond the capacity of these seed fields 🐾".repeat(3)), []);
+  }
+  assert.equal(ForceFit.validIsaacSeed("12345678"), false);
+});
 
-    const keyword = "From the long road home, Áine & I found another world. 🐾";
-    const hashed = ForceFit.encode(game, keyword);
-    assert.equal(hashed.kind, "hash", game);
-    assert.deepEqual(hashed, ForceFit.encode(game, keyword), game);
-    assert.ok(makeSeed(game, hashed.seed), game);
-    assert.deepEqual(ForceFit.decode(game, hashed.seed), { kind: "hash" }, game);
+test("the reported Valheim keyword decodes straight from each new seed", () => {
+  for (const input of ["loving kindness", "Loving Kindness", "loving home", "É!", "ab ", "\ufeffa"]) {
+    const variants = ForceFit.encodeVariants("valheim", input);
+    assert.ok(variants.length >= 2, input);
+    assert.deepEqual(variants, ForceFit.encodeVariants("valheim", input));
+    for (const { seed } of variants) {
+      assert.equal(seed.length, 10);
+      assert.equal(ForceFit.readPacket("valheim", seed).keyword, input);
+    }
   }
-  const packed = ForceFit.encode("valheim", "loving home");
-  assert.equal(packed.seed.length, 10);
-  assert.equal(ForceFit.decode("valheim", packed.seed).keyword, "loving home");
-  for (const keyword of ["É!", "A 🐾", "ab ", "\ufeffa"]) {
-    const encoded = ForceFit.encode("valheim", keyword);
-    assert.equal(ForceFit.decode("valheim", encoded.seed).keyword, keyword);
+  assert.deepEqual(ForceFit.readLegacy("valheim", "~KY0cTpmgx"), { readings: [], olderCode: true });
+  assert.equal(ForceFit.readLegacy("valheim", "~ErI6374JZ").readings.find((entry) => entry.variant === 1).keyword,
+    "loving home");
+});
+
+test("a custom or generated key unlocks the exact keyword for the right seed", () => {
+  for (const game of ["valheim", "going-medieval"]) {
+    for (const key of ["love", "af0edc324a1b23f0"]) {
+      const variants = ForceFit.encodeVariants(game, "cozy home", key);
+      assert.deepEqual(variants, ForceFit.encodeVariants(game, "cozy home", key));
+      assert.ok(variants.length >= 2);
+      for (const { seed } of variants) {
+        assert.ok(makeSeed(game, seed), game);
+        assert.equal(ForceFit.readPacket(game, seed, key).keyword, "cozy home");
+        assert.equal(ForceFit.readPacket(game, seed)?.keyword, undefined);
+        assert.equal(ForceFit.readPacket(game, seed, "wrong")?.keyword, undefined);
+      }
+    }
   }
+  assert.equal(ForceFit.readPacket("going-medieval", "unreadable"), null);
 });
 
 test("links and saved records retain the exact keyword even when game seeds collide", () => {
@@ -111,32 +137,6 @@ test("links and saved records retain the exact keyword even when game seeds coll
   assert.deepEqual(readSeedLink(link, home), record);
   assert.equal(readSeedLink(link, "https://example.com/seeds/"), null);
   assert.deepEqual(readSeedLink(home + "?game=valheim&seed=AB", home), { game: "valheim", seed: "AB" });
-});
-
-test("each Force fit shift derives a distinct valid seed and preserves reversible text", () => {
-  for (const game of Object.keys(PRESETS).filter(ForceFit.hasSpace)) {
-    const packed = ForceFit.encodeVariants(game, "ab");
-    assert.equal(packed.length, 8, game);
-    assert.equal(packed[0].seed, ForceFit.encode(game, "ab").seed, game);
-    assert.equal(new Set(packed.map(({ seed }) => seed)).size, packed.length, game);
-    for (const { seed, variant } of packed) {
-      assert.ok(makeSeed(game, seed), game);
-      if (game === "isaac") assert.ok(ForceFit.validIsaacSeed(seed));
-      assert.ok(ForceFit.decodeVariants(game, seed).some((entry) =>
-        entry.variant === variant && entry.keyword === "ab"), game);
-    }
-
-    const keyword = "Long keywords still drive every shift. 🐾";
-    const overflow = ForceFit.encodeVariants(game, keyword);
-    assert.deepEqual(overflow, ForceFit.encodeVariants(game, keyword), game);
-    assert.equal(new Set(overflow.map(({ seed }) => seed)).size, overflow.length, game);
-    for (const { seed, kind } of overflow) {
-      assert.equal(kind, "hash", game);
-      assert.ok(makeSeed(game, seed), game);
-      assert.deepEqual(ForceFit.decodeVariants(game, seed), [], game);
-    }
-  }
-  assert.equal(ForceFit.validIsaacSeed("12345678"), false);
 });
 
 test("rotating a keyword reverses exactly, including spaces and emoji", () => {

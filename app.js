@@ -57,6 +57,7 @@
   let methodVariations = [];
   let diceChoices = [];
   const rolledSeeds = new Set();
+  const keys = { encode: "", decode: "" };
   let decodeMethod = "game";
   let saved = readSaved();
   let collection = saved.some((entry) => game === "none" || entry.game === game)
@@ -108,136 +109,146 @@
     return "";
   }
 
+  function packedReadingDiffers(seed, keyword) {
+    const packet = ForceFit.readPacket(game, seed);
+    if (packet) return packet.keyword !== keyword;
+    return game === "valheim" && ForceFit.readLegacy(game, seed).olderCode;
+  }
+
   function keywordCandidate(input, preset) {
     const { seed, prefix, suffix } = preset.keyword(input);
-    const explainHash = "FNV-1a starts at 2166136261. For each UTF-8 byte, XOR it in, " +
-      "multiply by 16777619 and keep the low 32 bits.";
-    const candidate = {
-      id: "game-keyword", method: "keyword", label: "Game rule", value: seed, error: "", exact: seed === input
-    };
-
+    const literal = game === "valheim" && !suffix;
+    const exact = literal && !packedReadingDiffers(seed, input);
+    const label = literal ? "As typed" : "Short code";
+    const hint = exact ? "The seed is your keyword as typed." : "Save or share to keep the original keyword.";
+    let rule = "The app uses all the text you typed to make a repeatable number for this game.";
     if (game === "valheim") {
-      const rule = "One line of up to " + VALHEIM_LIMIT + " UTF-16 units goes in as typed. Otherwise keep " +
-        "the first 3 ASCII letters or digits with case intact. Append the full keyword’s FNV-1a hash in " +
-        "uppercase base 36, padded with zeros to 7 characters.";
-      const example = suffix ? input.length + " units → " + (prefix ? prefix + " + " : "") + suffix : "";
-      candidate.hint = input
-        ? (suffix ? "Shortened deterministically. Save or share to recover the keyword." : "Fits Valheim as typed.")
-        : "Up to " + VALHEIM_LIMIT + " UTF-16 units go in as typed.";
-      candidate.explanation = { rule, math: explainHash, example };
-      return candidate;
+      rule = literal
+        ? "Valheim gives you up to " + VALHEIM_LIMIT + " characters. Some symbols, such as emoji, take two spots."
+        : "The app keeps the first three letters or numbers it finds and adds a short code made from the full keyword.";
     }
-
-    candidate.hint = "The same keyword gives the same decimal seed.";
-    candidate.explanation = {
-      rule: "Hash the full keyword exactly as typed, including case, punctuation and spaces. " +
-        "Write the unsigned 32-bit result as decimal.",
-      math: explainHash
+    return {
+      id: "game-keyword", method: "keyword", label, value: seed, error: "", exact,
+      hint: input ? hint : "Enter a keyword to make a seed.",
+      explanation: {
+        rule,
+        detail: exact ? "" : "The code can create a world. Save or Share keeps the full text for later.",
+        example: suffix && prefix ? prefix + " + " + suffix : ""
+      }
     };
-    return candidate;
   }
 
-  function fitLabel(variant) {
-    return variant ? "Shift " + variant : "Standard";
-  }
-
-  function fitCandidate(result) {
-    const variant = result?.variant ?? 0;
-    const candidate = { id: "fit-" + variant, method: "fit", label: fitLabel(variant), value: "", error: "" };
-    const fitRule = "Try packing spaces and a–z first, then UTF-8 bytes. If the keyword exceeds both " +
-      "capacities, use a deterministic game seed and keep its exact keyword in Save or Share.";
-    if (!result) {
-      candidate.hint = "Pack a keyword into this game’s seed format.";
-      candidate.explanation = { rule: fitRule };
-      return candidate;
+  function fitChoices(input, key) {
+    const options = ForceFit.encodeVariants(game, input, key);
+    if (!options.length) {
+      return [{
+        id: "fit", method: "fit", label: input ? "Try shorter wording" : "Keep the whole keyword",
+        value: "", error: "", hint: input ? "This text takes more space than the seed has." : "",
+        explanation: {
+          rule: "Force fit puts the full keyword inside the seed when it fits. Words from the app’s list take up less room.",
+          detail: key ? "Your key changes how the text is stored. The game still sets the seed length."
+            : "Shorter wording can fit. Keyword seed can also make a short code you can save with the full text."
+        }
+      }];
     }
-
-    candidate.value = result.seed;
-    candidate.exact = result.kind !== "hash";
-    const example = "Slot " + result.index;
-    const shift = result.offset ? "Add " + result.offset + " and wrap modulo " + result.slots + ". " : "";
-    if (result.kind === "hash") {
-      candidate.hint = "Save or share this seed to recover the exact keyword.";
-      candidate.explanation = {
-        rule: "The keyword exceeds the space for packed text. Start a 64-bit FNV-1a hash at " +
-          "14695981039346656037. XOR each UTF-8 byte in, multiply by 1099511628211 and keep 64 bits.",
-        math: "Take (hash + " + result.offset + ") modulo " + result.slots + ", then multiply by 3. " + result.format,
-        example
+    return options.map(({ mode, backward, label, number, keyed, seed }) => {
+      const unit = mode === "words" ? "words" : mode === "letters" ? "letters and spaces" : "characters";
+      const sequence = mode === "words" ? input.split(" ") : [...input];
+      const example = backward ? sequence.reverse().join(mode === "words" ? " " : "") : "";
+      const rule = mode === "words"
+        ? "The app looks up each word in its built-in list and puts the word numbers and capitalization into the seed."
+        : mode === "letters" ? "The app uses a small number for each lowercase letter and space."
+          : "The app puts every character, including spaces, into the seed.";
+      const order = backward ? "It stores the " + unit + " from last to first. " : "It keeps their original order. ";
+      const recovery = keyed ? "Your key changes the seed. Use the same key in Decode."
+        : "Paste the seed by itself into Decode.";
+      return {
+        id: "fit-" + number, method: "fit", label, value: seed, error: "", exact: true, keyed,
+        hint: keyed ? "Decode needs the same key." : "The seed alone can recover the keyword.",
+        explanation: { rule, detail: order + recovery, example }
       };
-      return candidate;
-    }
+    });
+  }
 
-    const compact = result.kind === "compact";
-    candidate.hint = "The exact keyword is packed into this seed.";
-    candidate.explanation = {
-      rule: compact
-        ? "Start at 0. For each symbol, multiply by 27 and add its position in space followed by a–z, counting from 1."
-        : "Start at 0. For each UTF-8 byte, multiply by 256 and add the byte value plus 1.",
-      math: "Subtract 1. " + shift + "Multiply by 3 and add " + (compact ? "1. " : "2. ") + result.format,
-      example
+  function decodeCandidates(input, preset) {
+    const packet = ForceFit.readPacket(game, input, keys.decode);
+    const decoded = packet?.status === "decoded";
+    const older = packet ? null : ForceFit.readLegacy(game, input);
+    const original = knownKeyword();
+    const remembered = original === undefined ? [] : [{
+      id: "original", label: "Original keyword", value: original, error: "",
+      hint: "Recovered from the seed link or saved entry."
+    }];
+    const messages = {
+      "key-needed": "Tap Key and enter the key used to make this seed.",
+      "key-mismatch": "Check the seed and the key used to make it.",
+      "copy-check": "Check that the whole seed was copied."
     };
-    return candidate;
+    let hint = input ? fitsPreset() : "Paste a seed or share link.";
+    if (packet) hint = messages[packet.status] ?? hint;
+    else if (older?.olderCode) hint = "To recover this older seed’s keyword, open its saved entry or share link.";
+    else if (input && keys.decode) hint = "The entered key did not recover a keyword for this seed.";
+    const gameSeed = {
+      id: "game", label: "Game seed", value: input, error: input ? preset.validate(input) : "", hint,
+      hideReadings: Boolean((packet && !decoded) || older?.olderCode) && !remembered.length,
+      keyed: packet?.keyed || packet?.status === "key-needed" || packet?.status === "key-mismatch"
+    };
+
+    const matchingPacket = [];
+    if (decoded && (original === undefined || original === packet.keyword)) {
+      const automatic = game === "valheim" || packet.keyed;
+      const recovered = {
+        id: "packet", label: packet.label, value: packet.keyword, error: "", packed: true, keyed: packet.keyed,
+        automatic, hint: packet.keyed ? "Recovered from the seed and key."
+          : automatic ? "Recovered from the seed alone." : "This seed can be read as this keyword."
+      };
+      if (automatic) return [gameSeed, recovered];
+      matchingPacket.push(recovered);
+    }
+    if ((packet && !decoded) || older?.olderCode) return [gameSeed, ...remembered];
+
+    const legacy = (older?.readings ?? []).map(({ variant, keyword }) => ({
+      id: "older-" + variant, label: "Older Force fit " + (variant + 1), value: keyword,
+      packed: true, error: "", hint: "A possible keyword from an earlier version."
+    }));
+    const readings = matchingMethods(game).flatMap(([id, method]) => {
+      const value = method.decode(input);
+      return value ? [{
+        id, label: method.label, value, reversible: Boolean(method.steps), error: "",
+        hint: "Open a share link or saved entry for the exact keyword."
+      }] : [];
+    });
+    return [gameSeed, ...remembered, ...matchingPacket, ...legacy, ...readings];
   }
 
   function getCandidates() {
-    const encoding = view === "encode";
-    const input = encoding ? keywordInput.value : seedInput.value;
     const preset = PRESETS[game];
-    const candidates = matchingMethods(game).map(([id, method]) => {
-      const value = method[view](input);
-      const reversible = Boolean(method.steps);
-      const candidate = { id, label: method.label, value, error: "", hint: method.hint, reversible };
-      if (encoding) {
-        candidate.method = reversible ? "keyword" : "number";
-        candidate.explanation = { rule: method.steps ?? method.hint };
-      }
-      if (!input) return candidate;
-      if (encoding) {
-        candidate.error = value ? validateEncoding(value, preset) : "No characters usable with this method.";
-        if (value) {
-          candidate.hint = fitsPreset() || method.hint;
-          candidate.exact = !candidate.error && (reversible || method.decode(value) === input);
-        }
-      } else if (!value) {
-        candidate.error = method.invalid;
-      } else {
-        candidate.hint = "Open a share link or saved entry for the exact keyword.";
-      }
-      return candidate;
-    });
+    if (view === "decode") return decodeCandidates(seedInput.value, preset);
 
-    if (encoding) {
-      if (ForceFit.hasSpace(game)) {
-        const packed = ForceFit.encodeVariants(game, input);
-        candidates.unshift(...(packed.length ? packed.map(fitCandidate) : [fitCandidate()]));
-      }
-      candidates.unshift({
-        id: "as-typed", method: "keyword", label: "As typed", value: input,
-        error: input ? validateEncoding(input, preset) : "", exact: Boolean(input),
-        hint: input ? fitsPreset() : "Enter a keyword to use as a seed.",
-        explanation: { rule: "Use the keyword exactly as typed when it fits this game’s seed format." }
-      });
-      if (preset.keyword) candidates.unshift(keywordCandidate(input, preset));
-    } else {
-      const packed = ForceFit.decodeVariants(game, input).map(({ variant, keyword }) => ({
-        id: "fit-" + variant, label: "Force fit · " + fitLabel(variant), value: keyword,
-        packed: true, error: "", hint: "This keyword decodes with " + fitLabel(variant) + "."
-      }));
-      candidates.unshift(...packed);
-      candidates.unshift({
-        id: "game", label: "Game seed", value: input,
-        error: input ? preset.validate(input) : "",
-        hint: input ? fitsPreset() : "Paste a seed to check it, or a share link to recover its keyword."
-      });
-      const original = knownKeyword();
-      if (original !== undefined) {
-        candidates.unshift({
-          id: "original", label: "Original keyword", value: original, error: "",
-          hint: "Recovered exactly from the seed link or saved entry."
-        });
-      }
-    }
-    return candidates;
+    const input = keywordInput.value;
+    const key = keys.encode;
+    const packed = ForceFit.hasSpace(game) ? fitChoices(input, key) : [];
+    if (key && packed.length) return packed;
+    const methods = matchingMethods(game).map(([id, method]) => {
+      const value = method.encode(input);
+      const reversible = Boolean(method.steps);
+      const error = !input ? "" : value ? validateEncoding(value, preset) : "This variation needs different letters or digits.";
+      const exact = Boolean(value && !error && (reversible || method.decode(value) === input) &&
+        !packedReadingDiffers(value, input));
+      return {
+        id, label: method.label, value, error, exact, method: reversible ? "keyword" : "number",
+        hint: value && !exact ? "Save or share to keep the original keyword." : fitsPreset() || method.hint,
+        explanation: { rule: method.steps ?? method.hint }
+      };
+    });
+    const keyword = preset.keyword ? keywordCandidate(input, preset) : {
+      id: "as-typed", method: "keyword", label: "As typed", value: input,
+      error: input ? validateEncoding(input, preset) : "",
+      exact: Boolean(input && !packedReadingDiffers(input, input)),
+      hint: input ? fitsPreset() : "Enter a keyword to use as a seed.",
+      explanation: { rule: "Use the keyword as typed when it fits the game’s seed field." }
+    };
+    return [keyword, ...packed, ...methods];
   }
 
   function choiceKey(value) {
@@ -273,7 +284,7 @@
 
     const withinMethod = candidates.filter((candidate) => candidate.method === encodeMethod);
     methodVariations = distinctChoices(withinMethod);
-    diceChoices = distinctChoices(candidates);
+    diceChoices = distinctChoices(candidates.filter((candidate) => candidate.exact));
     const previous = withinMethod.find((candidate) => candidate.id === encodeVariation && !candidate.error && candidate.value);
     const selected = previous ?? methodVariations[0] ?? withinMethod[0];
     encodeVariation = selected.id;
@@ -306,8 +317,6 @@
       rolledSeeds.clear();
       pool = alternatives;
     }
-    const exact = pool.filter((candidate) => candidate.exact);
-    if (exact.length) pool = exact;
     const chosen = pool[Math.floor(Math.random() * pool.length)];
     rolledSeeds.add(choiceKey(chosen.value));
     showVariation(chosen);
@@ -326,7 +335,7 @@
     const list = byId("reading-list");
     const priority = ({ id, reversible }) => {
       if (id === "original") return 0;
-      if (id === "fit-0" && game === "valheim") return 1;
+      if (id === "packet" || (id === "older-0" && game === "valheim")) return 1;
       return reversible ? 2 : 3;
     };
     const readings = candidates.filter(({ id, value, error }) => id !== "game" && value && !error)
@@ -462,6 +471,12 @@
     byId("workspace").removeAttribute("data-decode-list");
     byId("map-settings").hidden = true;
     byId("roll").hidden = !PRESETS[game].roll;
+    byId("encode-key").hidden = !ForceFit.hasSpace(game);
+    for (const mode of ["encode", "decode"]) {
+      const button = byId(mode + "-key");
+      button.textContent = keys[mode] ? "Key set" : "Key";
+      button.setAttribute("aria-label", keys[mode] ? "Change secret key" : "Secret key");
+    }
 
     if (view === "keypad") {
       renderPhone();
@@ -474,18 +489,19 @@
 
     const encoding = view === "encode";
     const candidates = getCandidates();
+    const autoPacket = !encoding && decodeMethod === "game" && candidates.find((candidate) => candidate.automatic);
     const selected = encoding ? selectEncoding(candidates)
-      : candidates.find((candidate) => candidate.id === decodeMethod) ?? candidates[0];
+      : autoPacket || candidates.find((candidate) => candidate.id === decodeMethod) || candidates[0];
     const { id, value, error, hint, explanation, label: methodLabel, packed } = selected;
     if (!encoding) decodeMethod = id;
 
     const gameSeed = id === "game";
-    if (gameSeed && seedInput.value) {
+    if (gameSeed && seedInput.value && !selected.hideReadings) {
       byId("workspace").setAttribute("data-decode-list", "");
       byId("readings").hidden = false;
       renderReadings(candidates);
     }
-    if (!encoding && !gameSeed) {
+    if (!encoding && !gameSeed && !selected.automatic) {
       byId("reading-detail").hidden = false;
       byId("reading-method").textContent = methodLabel;
     }
@@ -496,11 +512,13 @@
     byId("map-settings").hidden = game !== "going-medieval" || !seedActions;
 
     const seed = encoding ? value : seedInput.value;
-    const keyword = encoding ? keywordInput.value : knownKeyword() ?? (exact ? value : undefined);
+    const original = encoding ? keywordInput.value : knownKeyword() ?? (exact ? value : undefined);
+    const keyword = selected.keyed ? undefined : original;
     const record = seedActions && !error ? makeSeed(game, seed, { ...settings(), keyword }) : null;
     let label = "Seed";
     if (!encoding && !gameSeed) {
-      label = id === "original" ? "Original keyword" : exact ? "Packed keyword" : "Possible reading";
+      label = selected.automatic ? "Recovered keyword" : id === "original" ? "Original keyword"
+        : exact ? "Possible keyword" : "Possible reading";
     }
     renderResult({
       value, error, note: hint, record, seedActions, label, explanation,
@@ -526,15 +544,17 @@
     refresh();
   }
 
+  function useGame(format) {
+    game = format;
+    gameSelect.value = game;
+    encodeMethod = firstEncodeMethod(game);
+    encodeVariation = undefined;
+    rolledSeeds.clear();
+    libraryIndex = 0;
+  }
+
   function openSeed(record, showKeyword = false) {
-    if (game !== record.game) {
-      game = record.game;
-      gameSelect.value = game;
-      encodeMethod = firstEncodeMethod(game);
-      encodeVariation = undefined;
-      rolledSeeds.clear();
-      libraryIndex = 0;
-    }
+    if (game !== record.game) useGame(record.game);
     recovery = record;
     seedInput.value = record.seed;
     terrainSelect.value = record.terrain ?? "";
@@ -549,11 +569,37 @@
     if (!explanation) return;
     byId("method-title").textContent = "How this seed is made";
     byId("method-rule").textContent = explanation.rule;
-    byId("method-math").textContent = explanation.math ?? "";
-    byId("method-math").hidden = !explanation.math;
+    byId("method-detail").textContent = explanation.detail ?? "";
+    byId("method-detail").hidden = !explanation.detail;
     byId("method-example").textContent = explanation.example ?? "";
     byId("method-example").hidden = !explanation.example;
     byId("method-dialog").showModal();
+  }
+
+  function editKey() {
+    const input = byId("key-input");
+    input.value = keys[view];
+    byId("generate-key").hidden = view !== "encode";
+    byId("copy-key").disabled = !input.value;
+    byId("key-note").textContent = view === "encode"
+      ? "Enter a key or generate one. Keep it to use with this seed in Decode."
+      : "Enter the key you used to make this seed.";
+    byId("key-dialog").showModal();
+  }
+
+  function applyKey(event) {
+    event.preventDefault();
+    keys[view] = byId("key-input").value;
+    if (view === "encode") {
+      if (keys.encode) encodeMethod = "fit";
+      encodeVariation = undefined;
+      rolledSeeds.clear();
+    } else {
+      decodeMethod = "game";
+      readingPage = 0;
+    }
+    byId("key-dialog").close();
+    refresh();
   }
 
   function toggleSave() {
@@ -697,18 +743,31 @@
   }
 
   gameSelect.addEventListener("change", () => {
-    game = gameSelect.value;
+    useGame(gameSelect.value);
     recovery = null;
-    encodeMethod = firstEncodeMethod(game);
-    encodeVariation = undefined;
-    rolledSeeds.clear();
     decodeMethod = "game";
     readingPage = 0;
-    libraryIndex = 0;
     writeStorage(gameKey, game);
     refresh();
   });
   byId("explain-method").addEventListener("click", explainMethod);
+  byId("encode-key").addEventListener("click", editKey);
+  byId("decode-key").addEventListener("click", editKey);
+  byId("key-form").addEventListener("submit", applyKey);
+  byId("key-input").addEventListener("input", () => {
+    byId("copy-key").disabled = !byId("key-input").value;
+  });
+  byId("generate-key").addEventListener("click", () => {
+    const random = crypto.getRandomValues(new Uint8Array(8));
+    byId("key-input").value = Array.from(random, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    byId("copy-key").disabled = false;
+  });
+  byId("copy-key").addEventListener("click", async () => {
+    const input = byId("key-input");
+    const copied = await copyText(input.value);
+    byId("key-note").textContent = copied ? "Key copied." : "Select the key field to copy it.";
+    if (!copied) input.select();
+  });
   byId("choose-seed").addEventListener("click", chooseSeed);
   byId("next-variation").addEventListener("click", nextVariation);
   byId("recover-saved").addEventListener("click", () => openSeed(currentResult.record, true));
@@ -751,6 +810,8 @@
       return;
     }
     if (recovery?.seed !== seedInput.value) recovery = null;
+    if (/^[~!+][0-9A-Za-z]{9}$/.test(seedInput.value) &&
+        (game === "none" || PRESETS[game].validate(seedInput.value))) useGame("valheim");
     readingPage = 0;
     decodeMethod = "game";
     refresh();
