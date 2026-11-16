@@ -1,7 +1,8 @@
 "use strict";
 
 (() => {
-  const { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput } = SeedTools;
+  const { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput,
+    translationError, quotePreview } = SeedTools;
   const byId = (id) => document.getElementById(id);
   const app = byId("app");
   const workspace = byId("workspace");
@@ -64,11 +65,15 @@
     return canonicalSeed(game, seed);
   }
 
-  function keepsSpelling(seed, keyword) {
-    if (game !== "valheim") return true;
-    if (ForceFit.needsRecovery(game, seed)) return false;
+  function valheimReadingConflict(seed, keyword) {
+    if (game !== "valheim") return "";
+    if (ForceFit.needsRecovery(game, seed)) return "The * prefix makes Decode ask for a generated r1 key.";
     const packet = ForceFit.readPacket(game, seed);
-    return packet ? packet.keyword === keyword : !ForceFit.readLegacy(game, seed).olderCode;
+    if (packet?.status === "decoded") {
+      return packet.keyword === keyword ? "" : `The ! prefix makes Decode read ${quotePreview(packet.keyword)}.`;
+    }
+    if (packet) return SeedTrace.packetFailure(ForceFit.inspect("packet", game, seed));
+    return ForceFit.readLegacy(game, seed).olderCode ? "Decode reads this ~ seed as an older hash with no stored keyword." : "";
   }
 
   function availableEncodings(keyword) {
@@ -84,22 +89,20 @@
       const method = compatible.get(id);
       if (id !== "literal" && !method) {
         disabled.add(id);
-        unavailable.set(id, METHODS[id].usesSeparators
-          ? "Requires a seed format that accepts dashes."
-          : "Requires a seed format with letters.");
+        unavailable.set(id, { reason: METHODS[id].usesSeparators
+          ? `${PRESETS[game].label} rejects dashed seeds and the one-letter A1Z26 codes 1–26.`
+          : `${PRESETS[game].label} uses numeric seeds. Flip case requires letters.` });
       } else if (keyword) {
         const value = id === "literal" ? keyword : method.encode(keyword) || (method.reversible ? keyword : "");
-        const stored = seedIdentity(value);
+        const formatError = value && validateSeed(value);
+        const stored = formatError ? "" : seedIdentity(value);
         const restored = method && stored
           ? method.decode(methodInput(game, id, stored)) || (method.reversible ? stored : "")
           : stored;
-        const normalization = stored !== value ? "The game stores " + JSON.stringify(stored) + ". " : "";
-        const error = !value ? "This method has no seed for this keyword."
-          : validateSeed(value)
-          || (!matchesReading(method, restored, keyword)
-            ? normalization + "Decodes as " + (restored ? JSON.stringify(restored) : "no text") + "." : "")
-          || (id !== "literal" && !keepsSpelling(value, keyword) ? "The result is reserved for a packed Valheim seed." : "");
-        if (error) unavailable.set(id, error);
+        const reason = formatError || (!value || !matchesReading(method, restored, keyword)
+          ? translationError(game, id, keyword, value, stored, restored)
+          : id === "literal" ? "" : valheimReadingConflict(value, keyword));
+        if (reason) unavailable.set(id, { reason, attempted: value });
         else {
           direct.push({ id, method: id, value, label: option.text });
           exactDirect ||= restored === keyword;
@@ -109,7 +112,7 @@
 
     if (!canPack) {
       disabled.add("fit");
-      unavailable.set("fit", "Choose a game with a defined seed format.");
+      unavailable.set("fit", { reason: "Force fit needs a game’s seed limits to place and recover the keyword." });
     }
     const packed = ForceFit.encodeVariants(game, keyword, key).filter(({ seed }) => !validateSeed(seed))
       .map((recipe) => ({
@@ -121,7 +124,9 @@
           id: "recovery-" + index, method: "fit", value: seed, key, label: "Force fit · seed + r1 key"
         })));
     }
-    if (keyword && canPack && !packed.length) unavailable.set("fit", "The keyword exceeds this game’s packed seed space.");
+    if (keyword && canPack && !packed.length) {
+      unavailable.set("fit", { reason: "No Force fit recipe fits in this seed alone. Select Force fit to generate an r1 key." });
+    }
     return {
       disabled,
       choices: [...direct.filter(({ id }) => id === "literal"), ...packed, ...direct.filter(({ id }) => id !== "literal")]
@@ -142,7 +147,7 @@
     encodings = [...new Map(rollChoices.map((choice) => [seedIdentity(choice.value), choice])).values()];
     for (const [id, option] of Object.entries(methodOptions)) {
       option.disabled = disabled.has(id);
-      option.title = unavailable.get(id) ?? "";
+      option.title = unavailable.get(id)?.reason ?? "";
     }
     methodOptions.fit.text = encoding?.method === "fit" ? encoding.label : "Force fit";
     const fallback = Object.keys(methodOptions).find((id) => !disabled.has(id));
@@ -154,7 +159,7 @@
     resultValue.value = encoding?.value ?? "";
     recoveryKey.value = encoding?.key ?? "";
     byId("recovery-row").hidden = !recoveryKey.value;
-    setStatus(keyword && !encoding ? unavailable.get(methodSelect.value) ?? "Check the keyword." : "");
+    setStatus(keyword && !encoding ? unavailable.get(methodSelect.value)?.reason : "");
     showMap(resultValue.value);
   }
 
@@ -196,14 +201,16 @@
       };
     }
     if (ForceFit.needsRecovery(game, seed)) {
-      return { kind: "recovery", error: key ? "Check seed and key." : "Key required.", readings: literal };
+      const trace = ForceFit.inspect("recovery", game, seed, key);
+      return { kind: "recovery", error: SeedTrace.recoveryFailure(game, key, trace), readings: literal };
     }
-    if (packet?.status === "key-needed") return { kind: "packet", error: "Key required.", readings: literal };
-    if (packet?.status === "key-mismatch") return { kind: "packet", error: "Check seed and key.", readings: literal };
-    if (packet?.status === "copy-check") return { kind: "packet", error: "Check the seed.", readings: literal };
+    if (packet && packet.status !== "decoded") {
+      const trace = ForceFit.inspect("packet", game, seed, key);
+      return { kind: "packet", error: SeedTrace.packetFailure(trace), readings: literal };
+    }
 
     const older = packet ? null : ForceFit.readLegacy(game, seed);
-    if (older?.olderCode) return { kind: "legacy", error: "Older short code. No keyword.", readings: literal };
+    if (older?.olderCode) return { kind: "legacy", error: "This older ~ seed stores a hash. The keyword was discarded.", readings: literal };
     const readings = [...literal];
     if (packet) readings.unshift({ id: "fit", kind: "packet", label: SeedTrace.fitLabel(packet), value: packet.keyword });
     for (const { variant, keyword } of older?.readings ?? []) {
@@ -218,8 +225,14 @@
         readings.push({ id: index ? id + "-" + index : id, method: id, label: method.label, value: reading });
       });
     }
-    const kind = !packet && ForceFit.recoveryGame(key) === game ? "recovery" : undefined;
-    return { kind, readings, error: key && !packet?.keyed ? "Check seed and key." : "" };
+    if (!key || packet?.keyed || formatError) return { readings };
+    if (key.startsWith("r1.")) {
+      const trace = ForceFit.inspect("recovery", game, seed, key);
+      return { kind: "recovery", readings, error: SeedTrace.recoveryFailure(game, key, trace) };
+    }
+    const trace = ForceFit.inspect("packet", game, seed, key);
+    if (trace?.keyed) return { kind: "packet", readings, error: SeedTrace.packetFailure(trace) };
+    return { readings, error: "This seed has no keyed Force fit reading for the entered secret key." };
   }
 
   function readingsPerPage() {
@@ -269,7 +282,7 @@
     const active = readingId === undefined ? result : selected;
     const showReadings = !active && choices.length > 0;
     const value = active?.value ?? "";
-    decoding = { kind, error: formatError || error, active, readings: choices };
+    decoding = { kind, formatError, error: formatError || error, active, readings: choices };
     byId("explain-decoding").disabled = !seed;
     seedInput.inputMode = PRESETS[game].numeric ? "numeric" : "text";
     byId("value-row").hidden = !value;
@@ -369,11 +382,11 @@
     }
   }
 
-  function tracePacked(kind, seed, key, reverse, variant) {
+  function tracePacked(kind, seed, key, reverse, variant, error) {
     const trace = ForceFit.inspect(kind, game, seed, key, variant);
-    if (!trace) return [SeedTrace.page("Check the seed", "The seed or key does not match this format.", [])];
+    if (!trace) return [SeedTrace.page("Keyword unavailable", error, [["Seed", JSON.stringify(seed)]])];
     if (kind === "packet") return SeedTrace.packetPages(trace, reverse);
-    if (kind === "recovery") return SeedTrace.recoveryPages(trace, reverse);
+    if (kind === "recovery") return SeedTrace.recoveryPages(trace, reverse, error);
     return SeedTrace.legacyPages(trace);
   }
 
@@ -381,12 +394,12 @@
     if (!encoding) {
       const id = methodSelect.value;
       const keyword = keywordInput.value;
-      const attempted = id === "literal" ? keyword : METHODS[id]?.encode(keyword);
-      const pages = [keyword
-        ? SeedTrace.page("Seed unavailable", unavailable.get(id) ?? "Check the keyword.",
+      const { reason, attempted } = unavailable.get(id) ?? {};
+      const pages = [reason && keyword
+        ? SeedTrace.page("Seed unavailable", reason,
           attempted ? [["Attempted seed", JSON.stringify(attempted)]] : [])
         : SeedTrace.page("Keyword", "Enter a keyword to see the calculation.", [])];
-      if (attempted) pages.push(...SeedTrace.direct(id, keyword, attempted, false, game));
+      if (attempted !== undefined) pages.push(...SeedTrace.direct(id, keyword, attempted, false, game));
       return { label: methodOptions[id]?.text ?? "Methods", pages };
     }
     const { id, method, value, key, label } = encoding;
@@ -398,17 +411,16 @@
   }
 
   function traceDecoding() {
-    const { active, error, readings } = decoding;
+    const { active, error, formatError, readings } = decoding;
     const seed = seedInput.value;
     const kind = active ? active.kind : decoding.kind;
-    if (kind) {
-      return { label: active?.label ?? "Force fit", kind, pages: tracePacked(kind, seed, keys.decode, true, active?.variant) };
-    }
-    if (active) return { label: active.label, pages: SeedTrace.direct(active.method ?? active.id, active.value, seed, true, game) };
-    return { label: "Readings", pages: [SeedTrace.page("Seed",
-      readings.length ? "Choose a reading to see its calculation. A seed can have several readings."
-        : error || "No reading matches this seed.",
-      [["Input", JSON.stringify(seed)], ["Possible readings", readings.length]])] };
+    const label = active?.label ?? (kind ? "Force fit" : "Readings");
+    const pages = kind ? tracePacked(kind, seed, keys.decode, true, active?.variant, error)
+      : active ? SeedTrace.direct(active.method ?? active.id, active.value, seed, true, game)
+        : [SeedTrace.page("Seed", error || (readings.length ? "Choose a reading to see its calculation." : "No reading matches this seed."),
+          [["Input", JSON.stringify(seed)], ["Possible readings", readings.length]])];
+    if (active && formatError) pages.unshift(SeedTrace.page("Seed unavailable for this game", formatError, [["Seed", JSON.stringify(seed)]]));
+    return { label, kind, pages };
   }
 
   function renderTrace() {
@@ -436,7 +448,7 @@
     const { label, kind, pages } = view === "encode" ? traceEncoding() : traceDecoding();
     tracePages = pages;
     if (view === "encode") {
-      const blocked = [...unavailable].map(([id, reason]) => [id === "fit" ? "Force fit" : methodOptions[id].text, reason]);
+      const blocked = [...unavailable].map(([id, { reason }]) => [id === "fit" ? "Force fit" : methodOptions[id].text, reason]);
       for (let i = 0; i < blocked.length; i += 4) {
         tracePages.push(SeedTrace.page("Method constraints", PRESETS[game].label, blocked.slice(i, i + 4)));
       }
