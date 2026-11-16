@@ -20,53 +20,58 @@ const SeedTools = (() => {
   const signedInteger = /^-?\d+$/;
   const nonLetters = /[^A-Za-z]+/g;
   const nonBase36 = /[^A-Za-z0-9]+/g;
-  const nonMultiTap = /[^A-Za-z0-9 ]+/g;
-  const normalize = (text, ignored = nonMultiTap) => text.replace(ignored, "").toUpperCase();
+  const nonMultiTap = /[^A-Za-z ]+/g;
+  const normalize = (text, ignored) => text.replace(ignored, "").toUpperCase();
+  const tapCodes = Object.fromEntries(Object.entries(letterKeys)
+    .map(([letter, [key, taps]]) => [letter, key.repeat(taps)]));
+  tapCodes[" "] = "0";
+  const alphabetCodes = Object.fromEntries(Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    (letter, index) => [letter, String(index + 1)]));
 
-  function encodeMultiTap(text) {
-    let output = "";
-    let previousKey = "";
-    const letters = normalize(text, nonMultiTap);
-    for (let index = 0; index < letters.length; index++) {
-      const letter = letters[index];
-      if (letter === " ") {
-        const nextKey = letterKeys[letters[index + 1]]?.[0];
-        output += previousKey && previousKey === nextKey ? "1" : "0";
-        previousKey = "";
-        continue;
+  function digitReadings(seed, symbols, widths) {
+    if (!digits.test(seed)) return null;
+    // Count complete readings at each offset so a page can skip whole branches.
+    const counts = new Array(seed.length + 1).fill(0n);
+    counts[seed.length] = 1n;
+    for (let offset = seed.length - 1; offset >= 0; offset--) {
+      for (const width of widths) {
+        const end = offset + width;
+        if (end <= seed.length && symbols.has(seed.slice(offset, end))) counts[offset] += counts[end];
       }
-      const [key, presses] = letterKeys[letter] ?? [letter, 1];
-      if (key === previousKey) output += "0";
-      output += key.repeat(presses);
-      previousKey = key;
     }
-    return output.replace(/^0+/, "");
+    return {
+      count: counts[0],
+      at(index) {
+        if (index < 0n || index >= counts[0]) return undefined;
+        let text = "";
+        let offset = 0;
+        while (offset < seed.length) {
+          for (const width of widths) {
+            const end = offset + width;
+            if (end > seed.length) continue;
+            const symbol = symbols.get(seed.slice(offset, end));
+            if (symbol === undefined) continue;
+            if (index < counts[end]) {
+              text += symbol;
+              offset = end;
+              break;
+            }
+            index -= counts[end];
+          }
+        }
+        return text;
+      }
+    };
   }
 
-  function decodeMultiTap(seed, trace) {
-    if (!/^[2-9]\d*$/.test(seed)) return "";
-    const runs = seed.match(/(\d)\1*/g);
-    let text = "";
-    for (const [index, run] of runs.entries()) {
-      const key = run[0];
-      if (key === "0" || key === "1") {
-        const previousKey = runs[index - 1][0];
-        const sameKey = Boolean(KEYMAP[previousKey] && previousKey === runs[index + 1]?.[0]);
-        if (key === "1" && (run.length !== 1 || !sameKey)) return "";
-        if (key === "0" && run.length === 1 && sameKey) {
-          trace?.push([run, "same-key separator"]);
-          continue;
-        }
-        trace?.push([run, "␠".repeat(run.length)]);
-        text += " ".repeat(run.length);
-        continue;
-      }
-      const letter = KEYMAP[key][run.length - 1];
-      if (!letter) return "";
-      trace?.push([run, letter]);
-      text += letter;
-    }
-    return text;
+  function digitMethod(label, codes, ignored, rule) {
+    const symbols = new Map(Object.entries(codes).map(([letter, code]) => [code, letter]));
+    const widths = [...new Set([...symbols.keys()].map((code) => code.length))].sort((a, b) => b - a);
+    return {
+      label, ignored, rule, ignoresCase: true,
+      encode: (text) => [...normalize(text, ignored)].map((letter) => codes[letter]).join(""),
+      readings: (seed) => digitReadings(seed, symbols, widths)
+    };
   }
 
   function encodePair(text) {
@@ -78,29 +83,6 @@ const SeedTools = (() => {
     const pairs = seed.match(/../g);
     const letters = pairs.map(([key, presses]) => KEYMAP[key][Number(presses) - 1]);
     return letters.includes(undefined) ? "" : letters.join("");
-  }
-
-  function encodeAlphabet(text, separator) {
-    const letters = normalize(text, nonLetters);
-    return [...letters].map((letter) => {
-      const value = String(letter.charCodeAt(0) - 64);
-      return separator ? value : value.padStart(2, "0");
-    }).join(separator);
-  }
-
-  function decodeAlphabet(tokens) {
-    const numbers = tokens.map(Number);
-    if (numbers.some((number) => number < 1 || number > 26)) return "";
-    return numbers.map((number) => String.fromCharCode(64 + number)).join("");
-  }
-
-  function decodeAlphabetFixed(seed) {
-    return /^(?:\d\d)+$/.test(seed) ? decodeAlphabet(seed.match(/../g)) : "";
-  }
-
-  function decodeAlphabetSeparated(seed) {
-    const text = seed.trim();
-    return /^\d+(?:[-\s,]+\d+)*$/.test(text) ? decodeAlphabet(text.match(/\d+/g)) : "";
   }
 
   function encodeBase36(text) {
@@ -203,19 +185,8 @@ const SeedTools = (() => {
   }
 
   const METHODS = {
-    mtap: {
-      label: "Multi-tap (0 separators)",
-      ignoresCase: true,
-      ignored: nonMultiTap,
-      encode: encodeMultiTap,
-      decode: decodeMultiTap,
-      runs(seed) {
-        const trace = [];
-        decodeMultiTap(seed, trace);
-        return trace;
-      },
-      rule: "Repeat the phone key once per tap. A zero separates consecutive letters on the same key. A single space between letters on that key uses 1. Other spaces use 0. Leading zeros are removed."
-    },
+    mtap: digitMethod("Multi-tap", tapCodes, nonMultiTap,
+      "Write the phone key once per tap and write 0 for each space in the keyword. Decode tries every grouping of the taps."),
     pair: {
       label: "Keypad [key][press]",
       ignoresCase: true,
@@ -224,23 +195,8 @@ const SeedTools = (() => {
       decode: decodePair,
       rule: "Write the phone key and the 1-based tap count for each letter. Decode consumes two digits per letter. For example, 23 is the third letter on key 2, C."
     },
-    fixed: {
-      label: "A1Z26 (fixed)",
-      ignoresCase: true,
-      ignored: nonLetters,
-      encode: (text) => encodeAlphabet(text, ""),
-      decode: decodeAlphabetFixed,
-      rule: "Write the letter’s 1-based alphabet position as two decimal digits, from A = 01 to Z = 26. Decode reads two digits at a time."
-    },
-    separated: {
-      label: "A1Z26 (dashes)",
-      ignoresCase: true,
-      ignored: nonLetters,
-      usesSeparators: true,
-      encode: (text) => encodeAlphabet(text, "-"),
-      decode: decodeAlphabetSeparated,
-      rule: "Write each 1-based alphabet position in decimal and join with dashes. Decode accepts dashes, whitespace, or commas between positions."
-    },
+    alphabet: digitMethod("A1Z26", alphabetCodes, nonLetters,
+      "Write the alphabet positions side by side, from A = 1 to Z = 26. Decode tries every grouping into those positions."),
     base36: {
       label: "Base 36 → decimal",
       ignoresCase: true,
@@ -275,7 +231,7 @@ const SeedTools = (() => {
   const FAMILIES = {
     literal: { label: "As typed", variants: ["literal"] },
     keypad: { label: "Phone keypad", variants: ["mtap", "pair"] },
-    alphabet: { label: "A1Z26", variants: ["fixed", "separated"] },
+    alphabet: { label: METHODS.alphabet.label, variants: ["alphabet"] },
     base36: { label: METHODS.base36.label, variants: ["base36"] },
     transforms: {
       label: "Character transforms",
@@ -285,11 +241,11 @@ const SeedTools = (() => {
   };
 
   const PRESETS = {
-    none: { label: "Any format", validate: () => "", allowsSeparators: true },
+    none: { label: "Any format", validate: () => "", allowsLetters: true },
     valheim: {
       label: "Valheim",
       validate: valheimValidity,
-      allowsSeparators: true,
+      allowsLetters: true,
       roll: valheimRoll
     },
     "going-medieval": {
@@ -302,7 +258,7 @@ const SeedTools = (() => {
     midjourney: { label: "Midjourney", validate: unsigned32, numeric: true },
     minecraft: { label: "Minecraft (numeric)", validate: (seed) => decimal(seed, I64_MIN, I64_MAX) },
     terraria: {
-      label: "Terraria", allowsSeparators: true,
+      label: "Terraria", allowsLetters: true,
       validate: (seed) => seed.trim() ? "" : "This seed is blank after trimming whitespace. Terraria requires text or a number."
     },
     isaac: { label: "Binding of Isaac", validate: packedSeeds.isaacSeedError, allowsLetters: true },
@@ -329,14 +285,8 @@ const SeedTools = (() => {
     factorio: { label: "Factorio", validate: unsigned32, numeric: true }
   };
 
-  const alphabetPositions = Array.from({ length: 26 }, (_, index) => String(index + 1));
-
   function matchingMethods(game) {
-    const { allowsSeparators, allowsLetters, validate } = PRESETS[game];
-    const allowsAlphabetCode = allowsSeparators || alphabetPositions.some((code) => !validate(code));
-    return Object.entries(METHODS).filter(([, method]) =>
-      (!method.usesSeparators || allowsAlphabetCode) &&
-      (!method.requiresLetters || allowsLetters || allowsSeparators));
+    return Object.entries(METHODS).filter(([, method]) => !method.requiresLetters || PRESETS[game].allowsLetters);
   }
 
   function normalizesDecimal(game) {
@@ -347,17 +297,11 @@ const SeedTools = (() => {
     return normalizesDecimal(game) && signedInteger.test(seed) ? BigInt(seed).toString() : seed;
   }
 
-  function methodInput(game, id, seed) {
-    if (id !== "fixed" || !normalizesDecimal(game) || !digits.test(seed)) return seed;
-    const decimal = canonicalSeed(game, seed);
-    // A1Z26 pairs need at most one leading zero. The digit count identifies it uniquely.
-    return decimal.length % 2 ? "0" + decimal : decimal;
-  }
-
   function matchesReading(method, reading, keyword) {
     // Only fold ASCII letter case. Spaces, punctuation, and other characters still have to match.
-    return reading === keyword || Boolean(method?.ignoresCase &&
-      reading === keyword.replace(/[a-z]/g, (letter) => letter.toUpperCase()));
+    const uppercase = (text) => text.replace(/[a-z]/g, (letter) => letter.toUpperCase());
+    return reading === keyword || Boolean(method?.ignoresCase && reading !== undefined &&
+      uppercase(reading) === uppercase(keyword));
   }
 
   function translationError(game, id, keyword, seed, stored, reading) {
@@ -365,12 +309,7 @@ const SeedTools = (() => {
     const decoded = reading ? `Decode reads ${quotePreview(reading)}.` : "Decode finds no keyword with this method.";
     if (!seed) {
       if (method.reversible) return `${method.label} leaves ${quotePreview(keyword)} unchanged.`;
-      if (id === "mtap") {
-        const kept = normalize(keyword, method.ignored);
-        return kept ? `Multi-tap turns ${quotePreview(kept)} into zeros and drops them from the front.`
-          : `Multi-tap needs a letter A–Z, a digit, or a space. It skipped ${quotePreview(keyword)}.`;
-      }
-      const alphabet = id === "base36" ? "a letter A–Z or a digit 0–9" : "a letter A–Z";
+      const alphabet = { mtap: "a letter A–Z or a space", base36: "a letter A–Z or a digit 0–9" }[id] ?? "a letter A–Z";
       return `${method.label} needs ${alphabet}. It skipped ${quotePreview(keyword)}.`;
     }
     const skipped = method?.ignored && keyword.match(method.ignored)?.[0];
@@ -379,13 +318,8 @@ const SeedTools = (() => {
       const count = keyword.length - reading.length;
       return `Converting from base 36 drops ${countLabel(count, "leading zero")}. ${decoded}`;
     }
-    if (id === "mtap") {
-      if (/^ /.test(keyword)) return `Multi-tap drops the zeros for leading spaces. ${decoded}`;
-      const digit = keyword.match(/\d/)?.[0];
-      if (digit) return `Multi-tap reads ${JSON.stringify(digit)} as a phone-key digit. ${decoded}`;
-      return `Multi-tap reads zeros as spaces or separators between taps on the same key. ${decoded}`;
-    }
     const normalization = stored === seed ? "" : `${PRESETS[game].label} stores ${quotePreview(seed)} as ${quotePreview(stored)}. `;
+    if (id === "mtap" && stored !== seed) return normalization + "The leading zeros represent spaces in the keyword.";
     return normalization + decoded;
   }
 
@@ -402,9 +336,7 @@ const SeedTools = (() => {
         const method = compatible.get(id);
         const label = METHODS[id]?.label ?? familyLabel;
         if (id !== "literal" && !method) {
-          const reason = METHODS[id].usesSeparators
-            ? `${gameName} rejects dashed seeds and the one-letter A1Z26 codes 1–26.`
-            : `${gameName} uses numeric seeds. Flip case requires letters.`;
+          const reason = `${gameName} uses numeric seeds. Flip case requires letters.`;
           failures.push({ id, family, label, reason });
           continue;
         }
@@ -412,7 +344,10 @@ const SeedTools = (() => {
         const value = method ? method.encode(keyword) : keyword;
         const formatError = value && validate(value);
         const stored = formatError ? "" : canonicalSeed(game, value);
-        const restored = method && stored ? method.decode(methodInput(game, id, stored)) : stored;
+        // A valid digit encoding preserves a grouping of the input even when the seed can be read several ways.
+        const restored = method?.readings
+          ? (stored === value ? normalize(keyword, method.ignored) : "")
+          : method && stored ? method.decode(stored) : stored;
         const reason = formatError || (!value || !matchesReading(method, restored, keyword)
           ? translationError(game, id, keyword, value, stored, restored) : "");
         if (reason) failures.push({ id, family, label, reason, attempted: value });
@@ -442,43 +377,47 @@ const SeedTools = (() => {
 
   function inspectDecodings(game, seed) {
     const readings = [];
-    if (!seed) return { readings, formatError: "" };
-    const formatError = PRESETS[game].validate(seed);
-    let olderError;
-    if (!formatError) {
-      readings.push({ id: "literal", label: FAMILIES.literal.label, value: seed });
+    const alternatives = [];
+    const formatError = seed ? PRESETS[game].validate(seed) : "";
+    if (seed && !formatError) {
+      readings.push({ method: "literal", label: FAMILIES.literal.label, value: seed });
       for (const { number, label, keyword } of packedSeeds.readVariants(game, seed)) {
-        readings.push({ id: "packed-" + number, kind: "packed", variant: number, label, value: keyword });
+        readings.push({ kind: "packed", variant: number, label, value: keyword });
       }
     }
     const methods = Object.entries(METHODS);
     methods.sort(([, left], [, right]) => Number(Boolean(right.reversible)) - Number(Boolean(left.reversible)));
-    for (const [id, method] of methods) {
-      const value = method.decode(methodInput(game, id, seed));
-      if (!value) continue;
-      caseReadings(method, value).forEach((reading, index) => {
-        readings.push({ id: index ? id + "-" + index : id, method: id, label: method.label, value: reading });
-      });
-    }
-    if (!formatError) {
-      const packet = packedSeeds.readPacket(game, seed);
-      if (packet?.status === "decoded") {
-        readings.push({ id: "packet", kind: "packet", label: "Older " + packet.label, value: packet.keyword });
-      } else if (packet) {
-        olderError = packedSeeds.packetError(packedSeeds.inspect("packet", game, seed));
+    if (seed) {
+      for (const [id, method] of methods) {
+        if (method.readings) {
+          const splits = method.readings(seed);
+          if (!splits?.count) continue;
+          const at = (index) => ({ method: id, label: method.label, value: splits.at(index).toLowerCase() });
+          readings.push(at(0n));
+          if (splits.count > 1n) alternatives.push({ count: splits.count - 1n, at: (index) => at(index + 1n) });
+          continue;
+        }
+        const decoded = method.decode(seed);
+        if (!decoded) continue;
+        for (const value of caseReadings(method, decoded)) readings.push({ method: id, label: method.label, value });
       }
-      const older = packedSeeds.readLegacy(game, seed);
-      for (const { variant, keyword } of older.readings) {
-        readings.push({ id: "older-" + variant, kind: "legacy", variant,
-          label: "Older packed text " + (variant + 1), value: keyword });
-      }
-      if (older.olderCode) olderError = "The older ~ format stored a hash and discarded the keyword.";
     }
-    return { readings, formatError, olderError };
+    const groups = [{ count: BigInt(readings.length), at: (index) => readings[Number(index)] }, ...alternatives];
+    return {
+      formatError,
+      count: groups.reduce((count, group) => count + group.count, 0n),
+      at(index) {
+        if (index < 0n) return undefined;
+        for (const group of groups) {
+          if (index < group.count) return group.at(index);
+          index -= group.count;
+        }
+      }
+    };
   }
 
   return { KEYMAP, METHODS, FAMILIES, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed,
-    methodInput, normalize, translationError, inspectEncodings, inspectDecodings };
+    normalize, translationError, inspectEncodings, inspectDecodings };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;

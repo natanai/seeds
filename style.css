@@ -202,6 +202,7 @@ textarea.entry {
 }
 .pager button { width: var(--control); }
 .pager output { min-width: 5.5ch; text-align: center; }
+#reading-page { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reading {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);

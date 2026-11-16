@@ -39,8 +39,8 @@
   let tracePages = [];
   let traceIndex = 0;
   const rolledSeeds = new Set();
-  let readingId;
-  let readingPage = 0;
+  let activeReading;
+  let readingPage = 0n;
   let readingLimit = 0;
   let phoneKeyword = "";
   let pendingKey = "";
@@ -144,49 +144,50 @@
   function renderReadings(readings) {
     const list = byId("reading-list");
     readingLimit = readingsPerPage();
-    const pages = Math.ceil(readings.length / readingLimit);
-    readingPage = Math.min(readingPage, pages - 1);
-    byId("reading-page").value = (readingPage + 1) + " / " + pages;
-    byId("reading-pager").hidden = pages === 1;
-    byId("reading-previous").disabled = readingPage === 0;
-    byId("reading-next").disabled = readingPage >= pages - 1;
+    const pageSize = BigInt(readingLimit);
+    const pages = (readings.count + pageSize - 1n) / pageSize;
+    if (readingPage >= pages) readingPage = pages - 1n;
+    byId("reading-page").value = (readingPage + 1n) + " / " + pages;
+    byId("reading-pager").hidden = pages === 1n;
+    byId("reading-previous").disabled = readingPage === 0n;
+    byId("reading-next").disabled = readingPage >= pages - 1n;
 
-    const first = readingPage * readingLimit;
-    const buttons = readings.slice(first, first + readingLimit).map(({ id, label, value }) => {
+    const first = readingPage * pageSize;
+    const buttons = [];
+    for (let index = first; index < first + pageSize && index < readings.count; index++) {
+      const reading = readings.at(index);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "reading";
       const name = document.createElement("span");
-      name.textContent = label;
+      name.textContent = reading.label;
       const keyword = document.createElement("code");
-      keyword.textContent = value;
+      keyword.textContent = reading.value;
       button.append(name, keyword);
       button.addEventListener("click", () => {
-        readingId = id;
+        activeReading = reading;
         render();
         byId("all-readings").focus({ preventScroll: true });
       });
-      return button;
-    });
+      buttons.push(button);
+    }
     list.replaceChildren(...buttons);
   }
 
   function renderDecoding() {
     const seed = seedInput.value;
-    const { readings, formatError, olderError } = inspectDecodings(game, seed);
-    const active = readings.find(({ id }) => id === readingId);
-    const showReadings = !active && readings.length > 0;
-    const value = active?.value ?? "";
-    decoding = { formatError, olderError, active, readings };
+    decoding = inspectDecodings(game, seed);
+    const showReadings = !activeReading && decoding.count > 0n;
+    const value = activeReading?.value ?? "";
     byId("explain-decoding").disabled = !seed;
     seedInput.inputMode = PRESETS[game].numeric ? "numeric" : "text";
     byId("value-row").hidden = !value;
     byId("result-label").textContent = "Possible keyword";
     resultValue.value = value;
-    byId("all-readings").hidden = !active;
+    byId("all-readings").hidden = !activeReading;
     byId("readings").hidden = !showReadings;
-    if (showReadings) renderReadings(readings);
-    setStatus(formatError);
+    if (showReadings) renderReadings(decoding);
+    setStatus(decoding.formatError);
     showMap(seed);
   }
 
@@ -258,15 +259,12 @@
   }
 
   function resetDecoding() {
-    readingId = undefined;
-    readingPage = 0;
+    activeReading = undefined;
+    readingPage = 0n;
   }
 
-  function tracePacked(kind, seed, reverse, variant) {
-    const trace = PackedText.inspect(kind, game, seed, variant);
-    if (kind === "packed") return SeedTrace.packedPages(trace, reverse);
-    if (kind === "packet") return SeedTrace.packetPages(trace, reverse);
-    return SeedTrace.legacyPages(trace);
+  function tracePacked(seed, reverse, variant) {
+    return SeedTrace.packedPages(PackedText.inspect(game, seed, variant), reverse);
   }
 
   function traceEncoding() {
@@ -282,21 +280,20 @@
       return { label: label ?? FAMILIES[methodSelect.value].label, kind, pages };
     }
     const { id, family, value, label, variant } = encoding;
-    if (family === "packed") return { label, kind: "packed", pages: tracePacked("packed", value, false, variant) };
+    if (family === "packed") return { label, kind: "packed", pages: tracePacked(value, false, variant) };
     return { label, pages: SeedTrace.direct(id, keyword, value, false, game) };
   }
 
   function traceDecoding() {
-    const { active, formatError, olderError, readings } = decoding;
+    const { formatError, count } = decoding;
     const seed = seedInput.value;
-    const kind = active?.kind;
-    const label = active?.label ?? "Readings";
-    const rows = [["Input", JSON.stringify(seed)], ["Possible readings", readings.length]];
-    if (olderError) rows.push(["Older packed text", olderError]);
-    const pages = kind ? tracePacked(kind, seed, true, active.variant)
-      : active ? SeedTrace.direct(active.method ?? active.id, active.value, seed, true, game)
-        : [SeedTrace.page("Seed", formatError || (readings.length ? "Choose a reading to see its calculation." : "No reading matches this seed."), rows)];
-    if (active && formatError) pages.unshift(SeedTrace.page("Seed unavailable for this game", formatError, [["Seed", JSON.stringify(seed)]]));
+    const kind = activeReading?.kind;
+    const label = activeReading?.label ?? "Readings";
+    const pages = kind ? tracePacked(seed, true, activeReading.variant)
+      : activeReading ? SeedTrace.direct(activeReading.method, activeReading.value, seed, true, game)
+        : [SeedTrace.page("Seed", formatError || (count ? "Choose a reading to see its calculation." : "No reading matches this seed."),
+          [["Input", JSON.stringify(seed)], ["Possible readings", count]])];
+    if (activeReading && formatError) pages.unshift(SeedTrace.page("Seed unavailable for this game", formatError, [["Seed", JSON.stringify(seed)]]));
     return { label, kind, pages };
   }
 
@@ -465,7 +462,7 @@
   byId("reading-previous").addEventListener("click", () => { readingPage--; render(); });
   byId("reading-next").addEventListener("click", () => { readingPage++; render(); });
   byId("all-readings").addEventListener("click", () => {
-    readingId = null;
+    activeReading = undefined;
     render();
     byId("reading-list").querySelector("button")?.focus({ preventScroll: true });
   });
