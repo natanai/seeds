@@ -1,8 +1,7 @@
 "use strict";
 
 (() => {
-  const { KEYMAP, FAMILIES, PRESETS, matchingMethods, caseReadings, canonicalSeed, methodInput,
-    inspectEncodings } = SeedTools;
+  const { KEYMAP, FAMILIES, PRESETS, canonicalSeed, inspectEncodings, inspectDecodings } = SeedTools;
   const byId = (id) => document.getElementById(id);
   const app = byId("app");
   const workspace = byId("workspace");
@@ -134,36 +133,6 @@
     render();
   }
 
-  function decode(seed, formatError) {
-    if (!seed) return {};
-    const literal = formatError ? [] : [{ id: "literal", label: "As typed", value: seed }];
-    const packet = PackedText.readPacket(game, seed);
-    if (packet && packet.status !== "decoded") {
-      const trace = PackedText.inspect("packet", game, seed);
-      return { kind: "packet", error: PackedText.packetError(trace), readings: literal };
-    }
-
-    const packed = packet && { id: "packed", kind: "packet", label: "Packed text · " + packet.label, value: packet.keyword };
-    if (packed && game === "valheim") return { result: packed, readings: literal };
-    const older = packet ? null : PackedText.readLegacy(game, seed);
-    if (older?.olderCode) return { kind: "legacy", error: "This older ~ seed stores a hash. The keyword was discarded.", readings: literal };
-    const readings = [...literal];
-    if (packed) readings.unshift(packed);
-    for (const { variant, keyword } of older?.readings ?? []) {
-      readings.push({ id: "older-" + variant, kind: "legacy", variant, label: "Older packed text " + (variant + 1), value: keyword });
-    }
-    const methods = matchingMethods(game);
-    methods.sort(([, left], [, right]) => Number(Boolean(right.reversible)) - Number(Boolean(left.reversible)));
-    for (const [id, method] of methods) {
-      const value = method.decode(methodInput(game, id, seed));
-      if (!value) continue;
-      caseReadings(method, value).forEach((reading, index) => {
-        readings.push({ id: index ? id + "-" + index : id, method: id, label: method.label, value: reading });
-      });
-    }
-    return { readings };
-  }
-
   function readingsPerPage() {
     const height = app.clientHeight;
     if (height <= 355) return app.clientWidth >= 530 ? 2 : 1;
@@ -204,23 +173,20 @@
 
   function renderDecoding() {
     const seed = seedInput.value;
-    const formatError = seed ? validateSeed(seed) : "";
-    const { result, kind, readings = [], error } = decode(seed, formatError);
-    const choices = result && readings.length ? [result, ...readings] : readings;
-    const selected = choices.find(({ id }) => id === readingId);
-    const active = readingId === undefined ? result : selected;
-    const showReadings = !active && choices.length > 0;
+    const { readings, formatError, olderError } = inspectDecodings(game, seed);
+    const active = readings.find(({ id }) => id === readingId);
+    const showReadings = !active && readings.length > 0;
     const value = active?.value ?? "";
-    decoding = { kind, formatError, error: formatError || error, active, readings: choices };
+    decoding = { formatError, olderError, active, readings };
     byId("explain-decoding").disabled = !seed;
     seedInput.inputMode = PRESETS[game].numeric ? "numeric" : "text";
     byId("value-row").hidden = !value;
-    byId("result-label").textContent = selected && selected !== result ? "Possible keyword" : "Keyword";
+    byId("result-label").textContent = "Possible keyword";
     resultValue.value = value;
-    byId("all-readings").hidden = !active || !choices.length;
+    byId("all-readings").hidden = !active;
     byId("readings").hidden = !showReadings;
-    if (showReadings) renderReadings(choices);
-    setStatus(formatError || (!value ? error : ""));
+    if (showReadings) renderReadings(readings);
+    setStatus(formatError);
     showMap(seed);
   }
 
@@ -296,16 +262,9 @@
     readingPage = 0;
   }
 
-  function detectGame() {
-    const seed = seedInput.value;
-    if (/^[~!][0-9A-Za-z]{9}$/.test(seed) && (game === "none" || validateSeed(seed))) {
-      useGame("valheim");
-    }
-  }
-
-  function tracePacked(kind, seed, reverse, variant, error) {
+  function tracePacked(kind, seed, reverse, variant) {
     const trace = PackedText.inspect(kind, game, seed, variant);
-    if (!trace) return [SeedTrace.page("Keyword unavailable", error, [["Seed", JSON.stringify(seed)]])];
+    if (kind === "packed") return SeedTrace.packedPages(trace, reverse);
     if (kind === "packet") return SeedTrace.packetPages(trace, reverse);
     return SeedTrace.legacyPages(trace);
   }
@@ -314,7 +273,7 @@
     const keyword = keywordInput.value;
     if (!encoding) {
       const { id, family, label, message, attempted } = encodingFailure();
-      const kind = family === "packed" ? "packet" : undefined;
+      const kind = family === "packed" ? "packed" : undefined;
       const pages = [message && keyword
         ? SeedTrace.page(encodings.length ? "Seed unavailable" : "No encoding fits", message,
           attempted ? [["Attempted seed", JSON.stringify(attempted)]] : [])
@@ -322,20 +281,21 @@
       if (!kind && attempted !== undefined) pages.push(...SeedTrace.direct(id, keyword, attempted, false, game));
       return { label: label ?? FAMILIES[methodSelect.value].label, kind, pages };
     }
-    const { id, family, value, label } = encoding;
-    if (family === "packed") return { label, kind: "packet", pages: tracePacked("packet", value, false) };
+    const { id, family, value, label, variant } = encoding;
+    if (family === "packed") return { label, kind: "packed", pages: tracePacked("packed", value, false, variant) };
     return { label, pages: SeedTrace.direct(id, keyword, value, false, game) };
   }
 
   function traceDecoding() {
-    const { active, error, formatError, readings } = decoding;
+    const { active, formatError, olderError, readings } = decoding;
     const seed = seedInput.value;
-    const kind = active ? active.kind : decoding.kind;
-    const label = active?.label ?? (kind ? "Packed text" : "Readings");
-    const pages = kind ? tracePacked(kind, seed, true, active?.variant, error)
+    const kind = active?.kind;
+    const label = active?.label ?? "Readings";
+    const rows = [["Input", JSON.stringify(seed)], ["Possible readings", readings.length]];
+    if (olderError) rows.push(["Older packed text", olderError]);
+    const pages = kind ? tracePacked(kind, seed, true, active.variant)
       : active ? SeedTrace.direct(active.method ?? active.id, active.value, seed, true, game)
-        : [SeedTrace.page("Seed", error || (readings.length ? "Choose a reading to see its calculation." : "No reading matches this seed."),
-          [["Input", JSON.stringify(seed)], ["Possible readings", readings.length]])];
+        : [SeedTrace.page("Seed", formatError || (readings.length ? "Choose a reading to see its calculation." : "No reading matches this seed."), rows)];
     if (active && formatError) pages.unshift(SeedTrace.page("Seed unavailable for this game", formatError, [["Seed", JSON.stringify(seed)]]));
     return { label, kind, pages };
   }
@@ -520,7 +480,6 @@
     render();
   });
   seedInput.addEventListener("input", () => {
-    detectGame();
     resetDecoding();
     render();
   });
