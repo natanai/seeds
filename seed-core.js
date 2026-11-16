@@ -3,6 +3,7 @@
 const SeedTools = (() => {
   const packedSeeds = typeof module === "object" ? require("./force-fit.js") : ForceFit;
   const U32_MAX = 4294967295n;
+  const LEGO_MAX = 2147483647n;
   const I64_MIN = -9223372036854775808n;
   const I64_MAX = 9223372036854775807n;
   const VALHEIM_LIMIT = 10;
@@ -17,13 +18,15 @@ const SeedTools = (() => {
   );
   const digits = /^\d+$/;
   const signedInteger = /^-?\d+$/;
-  const lettersAndDigits = /^[A-Z0-9]+$/;
-  const normalize = (text) => text.replace(/[^A-Za-z0-9 ]+/g, "").toUpperCase();
+  const nonLetters = /[^A-Za-z]+/g;
+  const nonBase36 = /[^A-Za-z0-9]+/g;
+  const nonMultiTap = /[^A-Za-z0-9 ]+/g;
+  const normalize = (text, ignored = nonMultiTap) => text.replace(ignored, "").toUpperCase();
 
   function encodeMultiTap(text) {
     let output = "";
     let previousKey = "";
-    const letters = normalize(text);
+    const letters = normalize(text, nonMultiTap);
     for (let index = 0; index < letters.length; index++) {
       const letter = letters[index];
       if (letter === " ") {
@@ -67,7 +70,7 @@ const SeedTools = (() => {
   }
 
   function encodePair(text) {
-    return [...normalize(text)].map((letter) => letterKeys[letter]?.join("") ?? "").join("");
+    return [...normalize(text, nonLetters)].map((letter) => letterKeys[letter].join("")).join("");
   }
 
   function decodePair(seed) {
@@ -78,7 +81,7 @@ const SeedTools = (() => {
   }
 
   function encodeAlphabet(text, separator) {
-    const letters = normalize(text).replace(/[^A-Z]/g, "");
+    const letters = normalize(text, nonLetters);
     return [...letters].map((letter) => {
       const value = String(letter.charCodeAt(0) - 64);
       return separator ? value : value.padStart(2, "0");
@@ -101,7 +104,7 @@ const SeedTools = (() => {
   }
 
   function encodeBase36(text) {
-    const normalized = normalize(text).replace(/ /g, "");
+    const normalized = normalize(text, nonBase36);
     if (!normalized) return "";
     let value = 0n;
     for (const character of normalized) {
@@ -140,9 +143,27 @@ const SeedTools = (() => {
   const lookalikes = "OIZEASGTB";
   const pairs = "O↔0, I↔1, Z↔2, E↔3, A↔4, S↔5, G↔6, T↔7, B↔8.";
 
+  function quotePreview(value) {
+    return value.length > 28 ? JSON.stringify(value.slice(0, 28)) + "…" : JSON.stringify(value);
+  }
+
+  function countLabel(count, unit) {
+    return `${count} ${unit}${count === 1 ? "" : "s"}`;
+  }
+
   function valheimValidity(seed) {
-    return seed.length <= VALHEIM_LIMIT && !/[\r\n\uD800-\uDFFF]/u.test(seed)
-      ? "" : "Use up to 10 characters on one line. Emoji can take two spots.";
+    if (/[\r\n]/.test(seed)) return "This seed contains a line break. Valheim seeds must be on one line.";
+    const surrogate = seed.match(/[\uD800-\uDFFF]/u)?.[0];
+    if (surrogate) return `This seed contains an unpaired UTF-16 surrogate (${JSON.stringify(surrogate)}).`;
+    if (seed.length <= VALHEIM_LIMIT) return "";
+    const characters = [...seed];
+    const doubleWidth = characters.find((character) => character.length === 2);
+    if (doubleWidth) {
+      return `${countLabel(characters.length, "character")} take ${seed.length} spots. Valheim allows ${VALHEIM_LIMIT}. ` +
+        `${JSON.stringify(doubleWidth)} takes two spots.`;
+    }
+    const unit = digits.test(seed) ? "digit" : "character";
+    return `This seed has ${countLabel(seed.length, unit)}. Valheim allows ${VALHEIM_LIMIT} characters.`;
   }
 
   function valheimRoll(random) {
@@ -151,44 +172,41 @@ const SeedTools = (() => {
       (value) => alphabet[value % alphabet.length]).join("");
   }
 
+  function characterError(seed, invalid, allowed) {
+    const character = seed.match(invalid)?.[0];
+    return character ? `This seed contains ${JSON.stringify(character)}. Use ${allowed}.` : "";
+  }
+
+  function sizeError(seed, min, max, unit) {
+    if (seed.length >= min && seed.length <= max) return "";
+    const required = min === max ? countLabel(min, unit) : `${min}–${max} ${unit}s`;
+    return `This seed has ${countLabel(seed.length, unit)}. The format requires ${required}.`;
+  }
+
   // Validation functions return an empty string for a seed that fits the preset.
-  function unsigned32(seed) {
-    if (!digits.test(seed)) return "Use decimal digits.";
-    return BigInt(seed) > U32_MAX ? "Maximum seed is 4,294,967,295." : "";
-  }
-
-  function lego(seed) {
-    if (!digits.test(seed)) return "Use decimal digits.";
-    if (seed.length > 10 || BigInt(seed) > 2147483647n || BigInt(seed) < 1n) {
-      return "Use a seed from 1 to 2,147,483,647.";
-    }
-    return "";
-  }
-
-  function minecraft(seed) {
-    if (!signedInteger.test(seed)) return "Use a signed decimal seed.";
+  function decimal(seed, min, max, maxDigits = Infinity) {
+    if (!seed) return "The seed is empty. Enter a decimal number.";
+    const signed = min < 0n;
+    const error = characterError(signed ? seed.replace(/^-/, "") : seed, /[^0-9]/u,
+      signed ? "digits with an optional leading minus sign" : "decimal digits (0–9)");
+    if (error) return error;
+    if (seed === "-") return "The minus sign needs at least one digit after it.";
+    if (seed.length > maxDigits) return `This seed has ${seed.length} digits. The format allows ${maxDigits}.`;
     const number = BigInt(seed);
-    return number < I64_MIN || number > I64_MAX ? "Outside the signed 64-bit range." : "";
+    if (number >= min && number <= max) return "";
+    const actual = seed.length > 28 ? `The ${seed.length - Number(seed.startsWith("-"))}-digit value` : String(number);
+    return number < min ? `${actual} is below the minimum seed of ${min}.` : `${actual} exceeds the maximum seed of ${max}.`;
   }
 
-  function isaac(seed) {
-    const code = seed.replace(/\s+/g, "").toUpperCase();
-    if (code.length !== 8 || !lettersAndDigits.test(code) || /[IOU]/.test(code)) {
-      return "Use 8 letters or digits, excluding I, O and U.";
-    }
-    return packedSeeds.validIsaacSeed(seed) ? "" : "Check the seed.";
-  }
-
-  function alphanumeric(seed, minimum, maximum) {
-    const code = seed.replace(/\s+/g, "").toUpperCase();
-    return lettersAndDigits.test(code) && code.length >= minimum && code.length <= maximum
-      ? "" : `Use ${minimum} to ${maximum} letters or digits.`;
+  function unsigned32(seed) {
+    return decimal(seed, 0n, U32_MAX);
   }
 
   const METHODS = {
     mtap: {
       label: "Multi-tap (0 separators)",
       ignoresCase: true,
+      ignored: nonMultiTap,
       encode: encodeMultiTap,
       decode: decodeMultiTap,
       runs(seed) {
@@ -201,6 +219,7 @@ const SeedTools = (() => {
     pair: {
       label: "Keypad [key][press]",
       ignoresCase: true,
+      ignored: nonLetters,
       encode: encodePair,
       decode: decodePair,
       rule: "Write the phone key and the 1-based tap count for each letter. Decode consumes two digits per letter. For example, 23 is the third letter on key 2, C."
@@ -208,6 +227,7 @@ const SeedTools = (() => {
     fixed: {
       label: "A1Z26 (fixed)",
       ignoresCase: true,
+      ignored: nonLetters,
       encode: (text) => encodeAlphabet(text, ""),
       decode: decodeAlphabetFixed,
       rule: "Write the letter’s 1-based alphabet position as two decimal digits, from A = 01 to Z = 26. Decode reads two digits at a time."
@@ -215,6 +235,7 @@ const SeedTools = (() => {
     separated: {
       label: "A1Z26 (dashes)",
       ignoresCase: true,
+      ignored: nonLetters,
       usesSeparators: true,
       encode: (text) => encodeAlphabet(text, "-"),
       decode: decodeAlphabetSeparated,
@@ -223,6 +244,7 @@ const SeedTools = (() => {
     base36: {
       label: "Base 36 → decimal",
       ignoresCase: true,
+      ignored: nonBase36,
       encode: encodeBase36,
       decode: decodeBase36,
       rule: "Use the alphabet 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ. Start at 0 and multiply by 36 before adding each digit’s value. Write the integer in decimal. Decode converts the integer back to base 36."
@@ -264,22 +286,32 @@ const SeedTools = (() => {
       numeric: true,
       roll: (random) => String(random.getRandomValues(new Uint32Array(1))[0])
     },
-    lego: { label: "LEGO Fortnite", validate: lego, numeric: true },
+    lego: { label: "LEGO Fortnite", validate: (seed) => decimal(seed, 1n, LEGO_MAX, 10), numeric: true },
     midjourney: { label: "Midjourney", validate: unsigned32, numeric: true },
-    minecraft: { label: "Minecraft (numeric)", validate: minecraft },
+    minecraft: { label: "Minecraft (numeric)", validate: (seed) => decimal(seed, I64_MIN, I64_MAX) },
     terraria: {
       label: "Terraria", allowsSeparators: true,
-      validate: (seed) => seed.trim() ? "" : "Enter a seed."
+      validate: (seed) => seed.trim() ? "" : "This seed is blank after trimming whitespace. Terraria requires text or a number."
     },
-    isaac: { label: "Binding of Isaac", validate: isaac, allowsLetters: true },
-    sts: { label: "Slay the Spire", validate: (seed) => alphanumeric(seed, 8, 16), allowsLetters: true },
+    isaac: { label: "Binding of Isaac", validate: packedSeeds.isaacSeedError, allowsLetters: true },
+    sts: {
+      label: "Slay the Spire", allowsLetters: true,
+      validate(seed) {
+        const code = seed.replace(/\s+/g, "").toUpperCase();
+        const error = characterError(code, /[^A-Z0-9]/u, "letters A–Z and digits 0–9");
+        if (error || (code.length >= 8 && code.length <= 16)) return error;
+        return `This seed has ${countLabel(code.length, "character")} after removing whitespace and uppercasing. Slay the Spire requires 8–16.`;
+      }
+    },
     spelunky2: {
-      label: "Spelunky 2", validate: (seed) => /^[0-9A-F]{8}$/i.test(seed) ? "" : "Use eight hexadecimal digits.",
+      label: "Spelunky 2",
+      validate: (seed) => characterError(seed, /[^0-9A-F]/iu, "hexadecimal digits (0–9, A–F)")
+        || sizeError(seed, 8, 8, "digit"),
       allowsLetters: true
     },
     deadcells: {
       label: "Dead Cells",
-      validate: (seed) => /^\d{6}$/.test(seed) ? "" : "Use 6 digits.",
+      validate: (seed) => characterError(seed, /[^0-9]/u, "decimal digits (0–9)") || sizeError(seed, 6, 6, "digit"),
       numeric: true
     },
     factorio: { label: "Factorio", validate: unsigned32, numeric: true }
@@ -316,6 +348,34 @@ const SeedTools = (() => {
       reading === keyword.replace(/[a-z]/g, (letter) => letter.toUpperCase()));
   }
 
+  function translationError(game, id, keyword, seed, stored, reading) {
+    const method = METHODS[id];
+    const decoded = reading ? `Decode reads ${quotePreview(reading)}.` : "Decode finds no keyword with this method.";
+    if (!seed) {
+      if (id === "mtap") {
+        const kept = normalize(keyword, method.ignored);
+        return kept ? `Multi-tap turns ${quotePreview(kept)} into zeros and drops them from the front.`
+          : `Multi-tap needs a letter A–Z, a digit, or a space. It skipped ${quotePreview(keyword)}.`;
+      }
+      const alphabet = id === "base36" ? "a letter A–Z or a digit 0–9" : "a letter A–Z";
+      return `${method.label} needs ${alphabet}. It skipped ${quotePreview(keyword)}.`;
+    }
+    const skipped = method?.ignored && keyword.match(method.ignored)?.[0];
+    if (skipped) return `${method.label} skips ${quotePreview(skipped)}. ${decoded}`;
+    if (id === "base36") {
+      const count = keyword.length - reading.length;
+      return `Converting from base 36 drops ${countLabel(count, "leading zero")}. ${decoded}`;
+    }
+    if (id === "mtap") {
+      if (/^ /.test(keyword)) return `Multi-tap drops the zeros for leading spaces. ${decoded}`;
+      const digit = keyword.match(/\d/)?.[0];
+      if (digit) return `Multi-tap reads ${JSON.stringify(digit)} as a phone-key digit. ${decoded}`;
+      return `Multi-tap reads zeros as spaces or separators between taps on the same key. ${decoded}`;
+    }
+    const normalization = stored === seed ? "" : `${PRESETS[game].label} stores ${quotePreview(seed)} as ${quotePreview(stored)}. `;
+    return normalization + decoded;
+  }
+
   function caseReadings(method, value) {
     if (!method.ignoresCase) return [value];
     const lower = value.toLowerCase();
@@ -323,7 +383,8 @@ const SeedTools = (() => {
     return [...new Set([value, lower, title])];
   }
 
-  return { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput, normalize };
+  return { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput,
+    normalize, translationError, quotePreview };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;

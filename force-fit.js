@@ -107,6 +107,20 @@ const ForceFit = (() => {
     return BigInt(byte);
   }
 
+  function readIsaac(seed) {
+    const code = seed.toUpperCase().replace(/\s+/g, "");
+    const character = [...code].find((symbol) => !ISAAC.includes(symbol));
+    if (character) return { error: `This seed contains ${JSON.stringify(character)}. Use Isaac’s alphabet ${ISAAC}.` };
+    if (code.length !== 8) return { error: `This seed has ${code.length} symbols after removing spaces. Isaac requires 8.` };
+    const token = readDigits(code, ISAAC);
+    const number = (token >> 8n) ^ ISAAC_MASK;
+    const check = token & 255n;
+    const expected = isaacChecksum(number);
+    if (check !== expected) return { error: `Isaac checksum is ${check}. The seed’s value requires ${expected}.` };
+    if (number === 0n) return { error: "This seed encodes 0. Isaac requires a nonzero run seed." };
+    return { index: number - 1n };
+  }
+
   const unsigned32 = decimalSpace(0n, U32_MAX);
   const positive31 = decimalSpace(1n, 2147483647n);
   const spaces = {
@@ -123,14 +137,7 @@ const ForceFit = (() => {
         const number = index + 1n;
         return writeDigits(((number ^ ISAAC_MASK) << 8n) | isaacChecksum(number), ISAAC, 8);
       },
-      read(seed) {
-        const digits = seed.toUpperCase().replace(/\s+/g, "");
-        if (digits.length !== 8) return null;
-        const token = readDigits(digits, ISAAC);
-        if (token === null) return null;
-        const number = (token >> 8n) ^ ISAAC_MASK;
-        return isaacChecksum(number) === (token & 255n) ? number - 1n : null;
-      }
+      read: (seed) => readIsaac(seed).index ?? null
     },
     sts: decimalSpace(0n, 999999999999n, 12),
     spelunky2: alphabetSpace(HEX, 8, ""),
@@ -432,12 +439,15 @@ const ForceFit = (() => {
     const index = space.read(seed);
     if (index === null || index < 0n || index >= space.capacity) return null;
     if (trace) Object.assign(trace, { slot: slotDetails(game, space, index, seed), variant: Number(variant), token, key });
+    let stage = "Base64URL bytes";
     try {
       const tail = atob(token.replace(/-/g, "+").replace(/_/g, "/"));
       const bytes = new Uint8Array(tail.length + 1);
       bytes[0] = Number(index % 256n);
       for (let i = 0; i < tail.length; i++) bytes[i + 1] = tail.charCodeAt(i);
+      stage = "UTF-8 text";
       const text = decoder.decode(bytes);
+      stage = "JSON-escaped keyword";
       const keyword = JSON.parse('"' + text + '"');
       const fingerprint = hashText(game + "." + text, trace, "fingerprint");
       const expected = recoveryIndex(fingerprint, bytes[0], Number(variant), space.capacity);
@@ -446,8 +456,13 @@ const ForceFit = (() => {
         weight: OFFSETS[Number(variant)], keyword: valid ? keyword : null });
       return valid ? keyword : null;
     } catch {
+      if (trace) trace.error = `Joining the seed and key fails while reading the ${stage}.`;
       return null;
     }
+  }
+
+  function isaacSeedError(seed) {
+    return readIsaac(seed).error ?? "";
   }
 
   function validIsaacSeed(seed) {
@@ -459,7 +474,7 @@ const ForceFit = (() => {
     if (kind === "packet") readPacket(game, seed, key, trace);
     if (kind === "legacy") readLegacy(game, seed, trace);
     if (kind === "recovery") {
-      readRecovery(seed, key, trace);
+      if (recoveryGame(key) === game) readRecovery(seed, key, trace);
       if (!trace.slot && needsRecovery(game, seed)) {
         trace.slot = slotDetails(game, valheimRecovery, valheimRecovery.read(seed), seed);
       }
@@ -468,7 +483,7 @@ const ForceFit = (() => {
   }
 
   return {
-    hasSpace, encodeVariants, readPacket, readLegacy, validIsaacSeed,
+    hasSpace, encodeVariants, readPacket, readLegacy, validIsaacSeed, isaacSeedError,
     encodeRecovery, readRecovery, recoveryGame, needsRecovery, inspect
   };
 })();

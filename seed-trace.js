@@ -104,14 +104,23 @@ const SeedTrace = (() => {
     ]);
   }
 
+  function packetFailure({ shift, keyed, position, limit, check, expected, number }) {
+    if (shift === undefined) return "The + prefix marks a seed that needs its original secret key.";
+    if (expected === null) return `Text rank ${position} exceeds the maximum rank of ${limit}.`;
+    if (check !== expected) {
+      const actual = keyed ? "This key gives check" : "The seed carries check";
+      return `${actual} ${check}. The decoded rank and recipe require ${expected}.`;
+    }
+    return `Recipe ${number} cannot read text rank ${position} as UTF-8.`;
+  }
+
   function packetPages(trace, decoding) {
     const { slot, lane, encoded, capacity, checks, shift, raw, position, number, recipeCount, packet,
       check, expected, limit, text, keyHash, checkHash } = trace;
     const format = slotPage(slot, decoding, lane, encoded);
-    if (shift === undefined) return [format, page("Secret key required",
-      "This seed is marked as keyed. Decode needs the same key to undo the offset before reading its recipe and text.", [
+    if (shift === undefined) return [page("Secret key required", packetFailure(trace), [
         ["Stored packet", encoded], ["Packet slots", capacity]
-      ])];
+      ]), format];
     const key = keyHash ? page(decoding ? "Undo the secret key offset" : "Apply the secret key offset",
       "The key supplies an offset that wraps around the available packet slots.", [
         ["Secret key", quoted(trace.usedKey)], ...hashRows(keyHash, "FNV input = JSON.stringify([game, key])"),
@@ -128,8 +137,7 @@ const SeedTrace = (() => {
         ["Packet = raw × modulus + check", raw + " × " + checks + " + " + check + " = " + packet],
         ...(decoding ? [["Check in the seed", check === expected ? check + " (matches)" : check + " (fails)"]] : [])
       ]);
-    if (!text) return [format, ...(key ? [key] : []), checkPage, page("Keyword unavailable",
-      "The range, check, and text must all be valid to read a packed keyword.", [])];
+    if (!text) return [page("Keyword unavailable", packetFailure(trace), []), format, ...(key ? [key] : []), checkPage];
     const recipe = page("Recipe number", decoding
       ? "The raw number gives one recipe from its remainder and one text rank from its integer quotient plus 1."
       : "Multiply the zero-based rank by the number of recipes and add the recipe ID. Different recipes occupy different remainders.", [
@@ -153,13 +161,28 @@ const SeedTrace = (() => {
       : [symbols, rank, recipe, checkPage, ...(key ? [key] : []), format, certainty];
   }
 
-  function recoveryPages(trace, decoding) {
+  function recoveryFailure(game, key, trace) {
+    if (!key) return `The * prefix marks a seed that needs its generated r1.${game} key.`;
+    const keyGame = ForceFit.recoveryGame(key);
+    if (!keyGame) return `The generated key must have the form r1.${game}.variant.bytes.`;
+    const name = SeedTools.PRESETS[game].label;
+    if (game !== keyGame) return `This key is for ${SeedTools.PRESETS[keyGame].label}. The selected game is ${name}.`;
+    if (!trace && game === "valheim") return "An r1.valheim key requires a seed with * followed by nine base 62 digits.";
+    if (!trace) return `This seed falls outside the ${name} seed format used by the generated key.`;
+    if (trace.error) return trace.error;
+    if (trace.expected !== undefined && trace.expected !== trace.slot.index) {
+      return `This key gives slot ${trace.expected}. The seed stores slot ${trace.slot.index}.`;
+    }
+    return "The joined text fails the JSON round-trip check.";
+  }
+
+  function recoveryPages(trace, decoding, error) {
     const { slot, variant, token, weight, expected, bytes, fingerprint } = trace;
     const format = slotPage(slot, decoding);
-    if (!bytes) return [format, page("Read the generated key",
-      "The rest of the keyword is carried in the r1 key. Enter the matching key in Decode.", [
+    const failure = error ? page("Keyword unavailable", error, []) : null;
+    if (!bytes) return [page("Read the generated key", error, [
         ["First byte = game slot mod 256", slot.index + " mod 256 = " + (slot.index % 256n)]
-      ])];
+      ]), format];
     const carried = page(decoding ? "Join seed and key" : "Split the keyword",
       "JSON-escape the keyword and remove its outer quotes. Write that string in UTF-8. The seed carries the first byte and the key carries the rest.", [
         ["JSON-escaped text", quoted(trace.text)],
@@ -178,13 +201,13 @@ const SeedTrace = (() => {
       ["Variant and weight", variant + " uses " + weight + " per thousand"],
       ["Offset = floor(buckets × weight ÷ 1000)", offset],
       ["Expected slot = ((hash + offset) mod buckets) × 256 + first byte", expected],
-      ["Slot in the seed", slot.index],
-      ["Keyword", trace.keyword == null ? "Check the seed and key." : quoted(trace.keyword)]
+      ["Slot in the seed", slot.index]
     ]);
+    if (failure) return [failure, format, carried, check];
     const certainty = page("Exact recovery", "The original seed and generated key contain all the keyword bytes. " +
       "Decode takes the first byte from the seed, decodes the key’s Base64URL bytes, then restores the JSON string. " +
       "Different pairs can produce the same game seed.", [
-        ["Keyword", trace.keyword == null ? "Check the seed and key." : quoted(trace.keyword)],
+        ["Keyword", quoted(trace.keyword)],
         ["Check limit", "The fingerprint is reduced to the number of buckets. Unrelated inputs can share a bucket."]
       ]);
     return decoding ? [format, carried, check, certainty] : [carried, check, format, certainty];
@@ -224,9 +247,7 @@ const SeedTrace = (() => {
       rows.push(["Game’s decimal form", quoted(decimal)]);
     }
     if (method && !method.reversible) {
-      const normalized = SeedTools.normalize(keyword);
-      const letters = id === "base36" ? normalized.replace(/ /g, "")
-        : id === "mtap" ? normalized : normalized.replace(/[^A-Z]/g, "");
+      const letters = SeedTools.normalize(keyword, method.ignored);
       if (!decoding) rows.push(["After ASCII filtering and uppercasing", quoted(letters)]);
       if (id === "mtap" || id === "pair") {
         rows.push(["Keys", Object.entries(SeedTools.KEYMAP).map(([key, letters]) => key + " " + letters).join("   ")]);
@@ -235,7 +256,7 @@ const SeedTrace = (() => {
         rows.push(["Digit run ↔ reading", method.runs(readSeed).map(([run, reading]) => run + " ↔ " + reading).join("   ")]);
       }
       if (id === "base36") {
-        rows.push(["Values of the base 36 digits", [...keyword.replace(/^-/, "")].map((digit) => parseInt(digit, 36)).join(", ")]);
+        rows.push(["Values of the base 36 digits", [...letters].map((digit) => parseInt(digit, 36)).join(", ")]);
       } else if (id !== "mtap") {
         rows.push(["Character ↔ code", [...letters].map((letter) => letter + " ↔ " + method.encode(letter)).join("   ")]);
       }
@@ -253,5 +274,5 @@ const SeedTrace = (() => {
     return [page(method?.label ?? "As typed", rule, rows)];
   }
 
-  return { fitLabel, packetPages, recoveryPages, legacyPages, direct, page };
+  return { fitLabel, packetFailure, packetPages, recoveryFailure, recoveryPages, legacyPages, direct, page };
 })();

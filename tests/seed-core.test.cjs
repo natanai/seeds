@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput } = require("../seed-core.js");
+const { METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput,
+  translationError } = require("../seed-core.js");
 const ForceFit = require("../force-fit.js");
 const accepts = (game, seed) => PRESETS[game].validate(seed) === "";
 
@@ -63,6 +64,48 @@ test("Valheim measures length in the game's seed field units", () => {
   assert.ok(accepts("valheim", "🐾".repeat(5)));
   assert.equal(accepts("valheim", "🐾".repeat(6)), false);
   assert.equal(accepts("valheim", "a\nb"), false);
+});
+
+test("seed format failures name the mismatched size, symbol, range, or check", () => {
+  const nothing = METHODS.fixed.encode("nothing");
+  assert.equal(nothing, "14152008091407");
+  const isaac = ForceFit.encodeRecovery("isaac", "abc")[0].seed;
+  const badIsaac = isaac.slice(0, -1) + (isaac.endsWith("B") ? "C" : "B");
+  for (const [game, seed, reason] of [
+    ["valheim", nothing, /14 digits.*10 characters/],
+    ["valheim", "a\nb", /contains a line break/],
+    ["valheim", "🐾".repeat(6), /6 characters take 12 spots.*allows 10.*takes two/],
+    ["valheim", "\ud800", /unpaired UTF-16 surrogate/],
+    ["going-medieval", "4294967296", /4294967296 exceeds.*4294967295/],
+    ["lego", "1-2", /contains "-".*0–9/],
+    ["lego", "00000000001", /11 digits.*allows 10/],
+    ["lego", "0", /0 is below.*of 1/],
+    ["midjourney", "+1", /contains "\+"/],
+    ["minecraft", "-", /minus sign needs at least one digit/],
+    ["minecraft", "-9223372036854775809", /below.*-9223372036854775808/],
+    ["terraria", "  ", /blank after trimming whitespace/],
+    ["isaac", "12345678", /contains "5".*alphabet/],
+    ["isaac", badIsaac, /checksum is \d+.*requires \d+/],
+    ["sts", "1234 567", /7 characters after removing whitespace.*8–16/],
+    ["spelunky2", "123G4567", /contains "G".*hexadecimal/],
+    ["deadcells", "12345", /5 digits.*requires 6/],
+    ["factorio", "4294967296", /4294967296 exceeds.*4294967295/]
+  ]) assert.match(PRESETS[game].validate(seed), reason, game);
+});
+
+test("failed translations disclose the text they drop or change", () => {
+  for (const [id, keyword, reason] of [
+    ["fixed", "123", /needs a letter A–Z.*skipped "123"/],
+    ["fixed", "N!", /skips "!".*Decode reads "N"/],
+    ["mtap", "00", /turns "00" into zeros and drops them/],
+    ["mtap", "  AB", /drops the zeros for leading spaces.*"AB"/],
+    ["base36", "00N", /drops 2 leading zeros.*Decode reads "N"/]
+  ]) {
+    const method = METHODS[id];
+    const seed = method.encode(keyword);
+    assert.match(translationError("valheim", id, keyword, seed, seed, method.decode(seed)), reason, id);
+  }
+  assert.match(translationError("lego", "literal", "001", "001", "1", "1"), /stores "001" as "1"/);
 });
 
 test("Going Medieval supports unsigned seed values", () => {
