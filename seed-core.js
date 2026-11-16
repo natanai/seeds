@@ -1,7 +1,7 @@
 "use strict";
 
 const SeedTools = (() => {
-  const packedSeeds = typeof module === "object" ? require("./force-fit.js") : ForceFit;
+  const packedSeeds = typeof module === "object" ? require("./packed-text.js") : PackedText;
   const U32_MAX = 4294967295n;
   const LEGO_MAX = 2147483647n;
   const I64_MIN = -9223372036854775808n;
@@ -272,6 +272,18 @@ const SeedTools = (() => {
       (text) => reverse(swapLookalikes(text, lookalikes)), "Reverse the characters and swap " + pairs)
   };
 
+  const FAMILIES = {
+    literal: { label: "As typed", variants: ["literal"] },
+    keypad: { label: "Phone keypad", variants: ["mtap", "pair"] },
+    alphabet: { label: "A1Z26", variants: ["fixed", "separated"] },
+    base36: { label: METHODS.base36.label, variants: ["base36"] },
+    transforms: {
+      label: "Character transforms",
+      variants: ["upperLookalikes", "lowerLookalikes", "flipCase", "reverse", "rotate", "reverseLookalikes"]
+    },
+    packed: { label: "Packed text" }
+  };
+
   const PRESETS = {
     none: { label: "Any format", validate: () => "", allowsSeparators: true },
     valheim: {
@@ -352,6 +364,7 @@ const SeedTools = (() => {
     const method = METHODS[id];
     const decoded = reading ? `Decode reads ${quotePreview(reading)}.` : "Decode finds no keyword with this method.";
     if (!seed) {
+      if (method.reversible) return `${method.label} leaves ${quotePreview(keyword)} unchanged.`;
       if (id === "mtap") {
         const kept = normalize(keyword, method.ignored);
         return kept ? `Multi-tap turns ${quotePreview(kept)} into zeros and drops them from the front.`
@@ -376,6 +389,60 @@ const SeedTools = (() => {
     return normalization + decoded;
   }
 
+  function valheimReadingConflict(seed, keyword) {
+    const packet = packedSeeds.readPacket("valheim", seed);
+    if (packet?.status === "decoded") {
+      return packet.keyword === keyword ? "" : `The ! prefix makes Decode read ${quotePreview(packet.keyword)} as packed text.`;
+    }
+    if (packet) return packedSeeds.packetError(packedSeeds.inspect("packet", "valheim", seed));
+    return packedSeeds.readLegacy("valheim", seed).olderCode ? "Decode reads this ~ seed as an older hash with no stored keyword." : "";
+  }
+
+  function inspectEncodings(game, keyword) {
+    const { label: gameName, validate } = PRESETS[game];
+    const compatible = new Map(matchingMethods(game));
+    const choices = [];
+    const failures = [];
+    const disabled = new Set();
+    for (const [family, { label: familyLabel, variants }] of Object.entries(FAMILIES)) {
+      if (!variants) continue;
+      if (variants.every((id) => id !== "literal" && !compatible.has(id))) disabled.add(family);
+      for (const id of variants) {
+        const method = compatible.get(id);
+        const label = METHODS[id]?.label ?? familyLabel;
+        if (id !== "literal" && !method) {
+          const reason = METHODS[id].usesSeparators
+            ? `${gameName} rejects dashed seeds and the one-letter A1Z26 codes 1–26.`
+            : `${gameName} uses numeric seeds. Flip case requires letters.`;
+          failures.push({ id, family, label, reason });
+          continue;
+        }
+        if (!keyword) continue;
+        const value = method ? method.encode(keyword) : keyword;
+        const formatError = value && validate(value);
+        const stored = formatError ? "" : canonicalSeed(game, value);
+        const restored = method && stored ? method.decode(methodInput(game, id, stored)) : stored;
+        const reason = formatError || (!value || !matchesReading(method, restored, keyword)
+          ? translationError(game, id, keyword, value, stored, restored)
+          : id !== "literal" && game === "valheim" ? valheimReadingConflict(value, keyword) : "");
+        if (reason) failures.push({ id, family, label, reason, attempted: value });
+        else choices.push({ id, family, label, value });
+      }
+    }
+    if (!packedSeeds.hasSpace(game)) {
+      disabled.add("packed");
+      failures.push({ family: "packed", label: FAMILIES.packed.label,
+        reason: "Packed text needs the seed limits of a selected game." });
+    }
+    for (const { number, label, seed, reason } of packedSeeds.encode(game, keyword)) {
+      const id = "packed-" + number;
+      const error = reason || validate(seed);
+      if (error) failures.push({ id, family: "packed", label, reason: error, attempted: seed });
+      else choices.push({ id, family: "packed", label, value: seed });
+    }
+    return { choices, failures, disabled };
+  }
+
   function caseReadings(method, value) {
     if (!method.ignoresCase) return [value];
     const lower = value.toLowerCase();
@@ -383,8 +450,8 @@ const SeedTools = (() => {
     return [...new Set([value, lower, title])];
   }
 
-  return { KEYMAP, METHODS, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed, methodInput,
-    normalize, translationError, quotePreview };
+  return { KEYMAP, METHODS, FAMILIES, PRESETS, matchingMethods, matchesReading, caseReadings, canonicalSeed,
+    methodInput, normalize, translationError, inspectEncodings };
 })();
 
 if (typeof module === "object") module.exports = SeedTools;
