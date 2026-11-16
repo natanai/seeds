@@ -1,11 +1,11 @@
 "use strict";
 
 // Bump the version when changing the files in the offline snapshot.
-const CACHE = "meaningful-seeds-v10";
+const CACHE = "meaningful-seeds-v11";
 const SCOPE = new URL(self.registration.scope);
 const START = new URL("index.html", SCOPE).href;
 const assets = new Set([
-  "index.html", "style.css?v=10", "packed-text.js?v=10", "seed-core.js?v=10", "seed-trace.js?v=10", "app.js?v=10",
+  "index.html", "style.css?v=11", "packed-text.js?v=11", "seed-core.js?v=11", "seed-trace.js?v=11", "app.js?v=11",
   "manifest.webmanifest", "icon-192.png", "icon-512.png"
 ].map((path) => new URL(path, SCOPE).href));
 
