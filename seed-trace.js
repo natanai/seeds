@@ -5,7 +5,7 @@ const SeedTrace = (() => {
   const byteList = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(" ");
   const page = (title, note, rows) => ({ title, note, rows });
 
-  function slotPage(slot, decoding, lane, encoded) {
+  function slotPage(slot, decoding) {
     const rows = [];
     const input = slot.isaac ? slot.seed.toUpperCase().replace(/\s+/g, "") : slot.seed;
     if (slot.isaac) {
@@ -20,7 +20,7 @@ const SeedTrace = (() => {
     }
     if (slot.alphabet) {
       const alphabet = slot.alphabet;
-      const digits = [...input.slice(slot.prefix.length)].map((symbol) => alphabet.indexOf(symbol));
+      const digits = [...input].map((symbol) => alphabet.indexOf(symbol));
       rows.push(
         ["Alphabet in value order", alphabet],
         ["Digits written in base " + alphabet.length, digits.join(", ")],
@@ -28,8 +28,7 @@ const SeedTrace = (() => {
           (digits.length - i - 1)).join(" + ") + " = " + (slot.isaac?.token ?? slot.index)],
         slot.minWidth < slot.width
           ? ["Field width", slot.minWidth + "–" + slot.width + " digits. Encode writes the shortest form."]
-          : ["Field width", slot.width + " digits, padded on the left" +
-            (slot.prefix ? " after " + quoted(slot.prefix) : "")]
+          : ["Field width", slot.width + " digits, padded on the left"]
       );
     } else {
       rows.push(
@@ -37,24 +36,13 @@ const SeedTrace = (() => {
           " = " + (slot.minimum + slot.index)],
         ["Allowed range", slot.minimum + " through " + slot.maximum]
       );
-      if (slot.width) rows.push(["Decimal width", slot.width + " digits, padded on the left"]);
+      if (slot.width) rows.push(["Decimal width", "At least " + slot.width + " digits, padded on the left"]);
     }
-    if (lane != null) rows.push(["Game slot = 6 × stored packet + lane", "6 × " + encoded + " + " + lane + " = " + slot.index]);
     rows.push(["Seed", quoted(slot.seed)]);
     const note = slot.alphabet
       ? "A digit is the zero-based index in the alphabet. Read left to right using value = base × value + digit. To write, take remainders from right to left."
       : "The game field holds a decimal integer. Subtract the minimum to read the game slot.";
     return page(decoding ? "Read the seed" : "Write the seed", note, rows);
-  }
-
-  function hashRows(snapshot, input) {
-    return [
-      [input, snapshot.text],
-      ["UTF-8 bytes (hex)", byteList(snapshot.bytes)],
-      ["FNV-1a, 64 bits", "h starts at " + snapshot.start + ". For each byte b, h = ((h XOR b) × " +
-        snapshot.prime + ") mod 2⁶⁴."],
-      ["Hash h", snapshot.hash]
-    ];
   }
 
   function symbolsPage(text, keyword, decoding) {
@@ -111,60 +99,6 @@ const SeedTrace = (() => {
     return decoding ? [format, rank, symbols] : [symbols, rank, format];
   }
 
-  function packetPages(trace, decoding) {
-    const { slot, lane, capacity, checks, raw, position, number, recipeCount, packet,
-      check, expected, limit, text, checkHash } = trace;
-    const format = slotPage(slot, decoding, lane, packet);
-    const checkPage = page(decoding ? "Read and verify the check" : "Append the check",
-      "Integer division by the check modulus recovers the raw number. The remainder is the check.", [
-        ["Check modulus", checks],
-        ...(checkHash ? hashRows(checkHash, 'FNV input = JSON.stringify([game, decimal raw as text, ""])') : []),
-        ["Check = hash mod modulus", expected === null ? "Rank " + position + " exceeds " + limit : checkHash.hash + " mod " + checks + " = " + expected],
-        ["Packet = raw × modulus + check", raw + " × " + checks + " + " + check + " = " + packet],
-        ...(decoding ? [["Check in the seed", check === expected ? check + " (matches)" : check + " (fails)"]] : [])
-      ]);
-    if (!text) return [page("Keyword unavailable", PackedText.packetError(trace), []), format, checkPage];
-    const recipe = page("Recipe number", decoding
-      ? "The raw number gives one recipe from its remainder and one text rank from its integer quotient plus 1."
-      : "Multiply the zero-based rank by the number of recipes and add the recipe ID. Different recipes occupy different remainders.", [
-        ["Recipe ID = raw mod " + recipeCount, raw + " mod " + recipeCount + " = " + number + " (" + text.label + ")"],
-        ["Rank = floor(raw ÷ " + recipeCount + ") + 1", position],
-        ["Raw = (rank − 1) × " + recipeCount + " + recipe ID", "(" + position + " − 1) × " +
-          recipeCount + " + " + number + " = " + raw],
-        ["Largest rank that fits", "floor(" + capacity + " ÷ (" + recipeCount + " × " + checks + ")) = " + limit]
-      ]);
-    const symbols = symbolsPage(text, trace.keyword, decoding);
-    const rank = rankPage(text, decoding);
-    const certainty = page("Exact recovery", "Each packed seed stores one recipe ID and one text rank. " +
-      "Different recipes, including both orders, can store the same keyword. The order in the recipe tells Decode which way to read.", [
-        ["Recover", quoted(trace.keyword)],
-        ["Check limit", "A short check can also match an altered seed. " +
-          (lane == null ? "Older Valheim seeds used ! to announce this format." : "A game number can also be read as an ordinary number or by another method.")]
-      ]);
-    return decoding
-      ? [format, checkPage, recipe, rank, symbols, certainty]
-      : [symbols, rank, recipe, checkPage, format, certainty];
-  }
-
-  function legacyPages(trace) {
-    const { slot, lane, slots, weights, variant, offset, original, text } = trace;
-    const format = slotPage(slot, true);
-    if (lane === 0n) return [format, page("Older hash", "The older encoder stored a reduced FNV-1a hash and a variant offset in this lane. The text digits are unavailable.", [
-      ["Lane = game slot mod 3", slot.index + " mod 3 = " + lane],
-      ["Game slot", "3 × ((FNV-1a(UTF-8(keyword)) + offset) mod " + slots + ")"],
-      ["Variant weights per thousand", weights.join(", ")]
-    ])];
-    if (!text) return [format];
-    return [format, page("Older packed text variation",
-      "This format stores the digit alphabet in its lane and leaves the chosen offset unstated. Decode tries all eight offsets.", [
-        ["Lane = game slot mod 3", slot.index + " mod 3 = " + lane],
-        ["Slots in this lane", "floor((" + slot.capacity + " + 2 − " + lane + ") ÷ 3) = " + slots],
-        ["Offset for variation " + (variant + 1), "floor(" + slots + " × " + weights[variant] + " ÷ 1000) = " + offset],
-        ["Base slot = ((floor(game slot ÷ 3) + slots − offset) mod slots) × 3 + lane", original],
-        ["Rank = floor(base slot ÷ 3) + 1", text.position]
-      ]), rankPage(text, true), symbolsPage(text, trace.keyword, true)];
-  }
-
   function direct(id, keyword, seed, decoding, game) {
     const method = SeedTools.METHODS[id];
     let rule = method?.rule ?? "The seed is the keyword as typed, with the same characters and order.";
@@ -172,11 +106,7 @@ const SeedTrace = (() => {
     const result = decoding ? keyword : seed;
     const rows = [[decoding ? "Seed" : "Keyword", quoted(source)]];
     const decimal = SeedTools.canonicalSeed(game, seed);
-    const readSeed = SeedTools.methodInput(game, id, decoding ? seed : decimal);
-    if (decoding && readSeed !== seed) {
-      rows.push(["Digits in two-character groups", quoted(readSeed)]);
-      rule += " Decimal game seeds can omit a leading zero. An odd digit count restores that zero before pairing.";
-    } else if (!decoding && decimal !== seed) {
+    if (!decoding && decimal !== seed) {
       rows.push(["Game’s decimal form", quoted(decimal)]);
     }
     if (method && !method.reversible) {
@@ -185,15 +115,13 @@ const SeedTrace = (() => {
       if (id === "mtap" || id === "pair") {
         rows.push(["Keys", Object.entries(SeedTools.KEYMAP).map(([key, letters]) => key + " " + letters).join("   ")]);
       }
-      if (id === "mtap") {
-        rows.push(["Digit run ↔ reading", method.runs(readSeed).map(([run, reading]) => run + " ↔ " + reading).join("   ")]);
-      }
       if (id === "base36") {
         rows.push(["Values of the base 36 digits", [...letters].map((digit) => parseInt(digit, 36)).join(", ")]);
-      } else if (id !== "mtap") {
-        rows.push(["Character ↔ code", [...letters].map((letter) => letter + " ↔ " + method.encode(letter)).join("   ")]);
+      } else {
+        rows.push(["Character ↔ code", [...letters].map((letter) => (letter === " " ? "␠" : letter) +
+          " ↔ " + method.encode(letter)).join("   ")]);
       }
-      const canonical = method.ignoresCase ? method.decode(readSeed) : "";
+      const canonical = method.readings ? letters : method.decode(decoding ? seed : decimal);
       if (/[A-Z]/.test(canonical)) {
         rule += " Either case gives the same code. Each bracket shows the cases that Decode can read at that position.";
         rows.push(["Possible casing", canonical.replace(/[A-Z]/g, (letter) => "[" + letter + letter.toLowerCase() + "]")]);
@@ -207,5 +135,5 @@ const SeedTrace = (() => {
     return [page(method?.label ?? "As typed", rule, rows)];
   }
 
-  return { packedPages, packetPages, legacyPages, direct, page };
+  return { packedPages, direct, page };
 })();
