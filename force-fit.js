@@ -5,7 +5,10 @@ const ForceFit = (() => {
   const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   const HEX = "0123456789ABCDEF";
   const ISAAC = "ABCDEFGHJKLMNPQRSTWXYZ01234V6789";
+  const ISAAC_MASK = 0x0fef7ffdn;
   const U32_MAX = 4294967295n;
+  const HASH_START = 14695981039346656037n;
+  const HASH_PRIME = 1099511628211n;
   // Fractions of the game's available slots. Keep these stable for existing seeds.
   const OFFSETS = [0n, 618n, 236n, 854n, 472n, 90n, 708n, 326n];
   // Both the word positions and the list length are encoded. Preserve this list for existing seeds.
@@ -71,6 +74,7 @@ const ForceFit = (() => {
 
   function alphabetSpace(alphabet, width, prefix) {
     return {
+      alphabet, width, prefix,
       capacity: BigInt(alphabet.length) ** BigInt(width),
       write: (index) => prefix + writeDigits(index, alphabet, width),
       read(seed) {
@@ -82,6 +86,7 @@ const ForceFit = (() => {
 
   function decimalSpace(minimum, maximum, width = 0) {
     return {
+      minimum, maximum, width,
       capacity: maximum - minimum + 1n,
       write: (index) => String(minimum + index).padStart(width, "0"),
       read(seed) {
@@ -112,17 +117,18 @@ const ForceFit = (() => {
     minecraft: decimalSpace(-9223372036854775808n, 9223372036854775807n),
     terraria: decimalSpace(0n, 2147483647n),
     isaac: {
+      alphabet: ISAAC, width: 8, prefix: "",
       capacity: U32_MAX,
       write(index) {
         const number = index + 1n;
-        return writeDigits(((number ^ 0x0fef7ffdn) << 8n) | isaacChecksum(number), ISAAC, 8);
+        return writeDigits(((number ^ ISAAC_MASK) << 8n) | isaacChecksum(number), ISAAC, 8);
       },
       read(seed) {
         const digits = seed.toUpperCase().replace(/\s+/g, "");
         if (digits.length !== 8) return null;
         const token = readDigits(digits, ISAAC);
         if (token === null) return null;
-        const number = (token >> 8n) ^ 0x0fef7ffdn;
+        const number = (token >> 8n) ^ ISAAC_MASK;
         return isaacChecksum(number) === (token & 255n) ? number - 1n : null;
       }
     },
@@ -147,22 +153,42 @@ const ForceFit = (() => {
     return index;
   }
 
-  function unrank(index, radix) {
+  function unrank(index, radix, steps) {
     const digits = [];
     while (index > 0n) {
-      index--;
-      digits.push(Number(index % radix));
-      index /= radix;
+      const digit = Number((index - 1n) % radix);
+      const quotient = (index - 1n) / radix;
+      steps?.push({ index, digit, quotient });
+      digits.push(digit);
+      index = quotient;
     }
     return digits.reverse();
   }
 
   function hash64(bytes) {
-    let hash = 14695981039346656037n;
+    let hash = HASH_START;
     for (const byte of bytes) {
-      hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 1099511628211n);
+      hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * HASH_PRIME);
     }
     return hash;
+  }
+
+  function hashText(text, trace, field) {
+    const bytes = encoder.encode(text);
+    const hash = hash64(bytes);
+    if (trace) trace[field] = { text, bytes, hash, start: HASH_START, prime: HASH_PRIME };
+    return hash;
+  }
+
+  function slotDetails(game, space, index, seed) {
+    const { alphabet, minimum, maximum, width, prefix, capacity } = space;
+    const slot = { alphabet, minimum, maximum, width, prefix, capacity, index, seed };
+    if (game === "isaac") {
+      const number = index + 1n;
+      const check = isaacChecksum(number);
+      slot.isaac = { number, mask: ISAAC_MASK, check, token: ((number ^ ISAAC_MASK) << 8n) | check };
+    }
+    return slot;
   }
 
   function legacyIndex(game, keyword) {
@@ -197,16 +223,22 @@ const ForceFit = (() => {
     return legacyIndex(game, keyword) === index ? keyword : null;
   }
 
-  function readLegacy(game, seed) {
+  function readLegacy(game, seed, trace) {
     const index = seedIndex(game, seed);
     if (index === null) return { readings: [] };
     const lane = index % 3n;
-    if (lane === 0n) return { readings: [], olderCode: game === "valheim" };
     const slots = (spaces[game].capacity + 2n - lane) / 3n;
+    if (trace) Object.assign(trace, { lane, slots, weights: OFFSETS,
+      slot: slotDetails(game, spaces[game], index, seed) });
+    if (lane === 0n) return { readings: [], olderCode: game === "valheim" };
     const readings = OFFSETS.flatMap((weight, variant) => {
       const offset = slots * weight / 1000n;
       const original = ((index / 3n + slots - offset) % slots) * 3n + lane;
       const keyword = decodeLegacySlot(game, original);
+      if (trace?.variant === variant && keyword) {
+        const recipe = { mode: lane === 1n ? "letters" : "text", backward: false };
+        Object.assign(trace, { offset, original, keyword, text: textDetails(original / 3n + 1n, recipe) });
+      }
       return keyword ? [{ keyword, variant }] : [];
     });
     return { readings };
@@ -261,6 +293,16 @@ const ForceFit = (() => {
     return recipe.backward ? [...text].reverse().join("") : text;
   }
 
+  function textDetails(position, recipe) {
+    const { mode } = recipe;
+    const radix = mode === "words" ? BigInt(3 * wordList.length) : mode === "letters" ? 27n : 256n;
+    const steps = [];
+    const digits = unrank(position, radix, steps);
+    const ordered = readRank(position, { ...recipe, backward: false });
+    return { ...recipe, radix, digits, steps, ordered, position, alphabet: mode === "letters" ? LOWERCASE : undefined,
+      words: mode === "words" ? wordList.length : undefined };
+  }
+
   const valheimPacked = alphabetSpace(BASE62, 9, "!");
   const valheimKeyed = alphabetSpace(BASE62, 9, "+");
 
@@ -279,12 +321,12 @@ const ForceFit = (() => {
     };
   }
 
-  function keywordCheck(game, raw, key, checks) {
-    return hash64(encoder.encode(JSON.stringify([game, String(raw), key]))) % checks;
+  function keywordCheck(game, raw, key, checks, trace) {
+    return hashText(JSON.stringify([game, String(raw), key]), trace, "checkHash") % checks;
   }
 
-  function keyAmount(game, key, capacity) {
-    return key ? hash64(encoder.encode(JSON.stringify([game, key]))) % capacity : 0n;
+  function keyAmount(game, key, capacity, trace) {
+    return key ? hashText(JSON.stringify([game, key]), trace, "keyHash") % capacity : 0n;
   }
 
   function checkCount(game, keyed) {
@@ -308,7 +350,7 @@ const ForceFit = (() => {
     });
   }
 
-  function readPacket(game, seed, key = "") {
+  function readPacket(game, seed, key = "", trace) {
     if (!hasSpace(game) || !seed) return null;
     const marked = game === "valheim" && /^[!+][0-9A-Za-z]{9}$/.test(seed);
     if (game === "valheim" && !marked) return null;
@@ -318,18 +360,28 @@ const ForceFit = (() => {
     const space = packetSpace(game, keyed);
     const encoded = space.read(seed);
     if (encoded === null) return null;
+    const checks = checkCount(game, keyed);
+    const limit = space.capacity / (recipeCount * checks);
+    if (trace) Object.assign(trace, {
+      keyed, encoded, capacity: space.capacity, checks, recipeCount, limit,
+      lane: game === "valheim" ? null : index % 6n,
+      slot: game === "valheim" ? slotDetails(game, space, encoded, seed) : slotDetails(game, spaces[game], index, seed)
+    });
     if (keyed && !key) return marked ? { status: "key-needed" } : null;
     const usedKey = keyed ? key : "";
-    const checks = checkCount(game, keyed);
-    const packet = (encoded + space.capacity - keyAmount(game, usedKey, space.capacity)) % space.capacity;
+    const shift = keyAmount(game, usedKey, space.capacity, trace);
+    const packet = (encoded + space.capacity - shift) % space.capacity;
     const raw = packet / checks;
     const position = raw / recipeCount + 1n;
     const number = Number(raw % recipeCount);
     const recipe = recipes[number];
-    if (position <= space.capacity / (recipeCount * checks) &&
-        packet % checks === keywordCheck(game, raw, usedKey, checks)) {
+    const check = packet % checks;
+    const expected = position <= limit ? keywordCheck(game, raw, usedKey, checks, trace) : null;
+    if (trace) Object.assign(trace, { usedKey, shift, packet, raw, position, number, check, expected });
+    if (check === expected) {
       try {
         const keyword = readRank(position, recipe);
+        if (trace) Object.assign(trace, { keyword, text: textDetails(position, recipe) });
         return { status: "decoded", keyword, keyed, ...recipe };
       } catch {
         // An unrelated seed can resemble a packet without containing readable text.
@@ -372,13 +424,14 @@ const ForceFit = (() => {
     });
   }
 
-  function readRecovery(seed, key) {
+  function readRecovery(seed, key, trace) {
     const match = recoveryKey.exec(key);
     if (!match || !hasSpace(match[1])) return null;
     const [, game, variant, token] = match;
     const space = game === "valheim" ? valheimRecovery : spaces[game];
     const index = space.read(seed);
     if (index === null || index < 0n || index >= space.capacity) return null;
+    if (trace) Object.assign(trace, { slot: slotDetails(game, space, index, seed), variant: Number(variant), token, key });
     try {
       const tail = atob(token.replace(/-/g, "+").replace(/_/g, "/"));
       const bytes = new Uint8Array(tail.length + 1);
@@ -386,9 +439,12 @@ const ForceFit = (() => {
       for (let i = 0; i < tail.length; i++) bytes[i + 1] = tail.charCodeAt(i);
       const text = decoder.decode(bytes);
       const keyword = JSON.parse('"' + text + '"');
-      const fingerprint = hash64(encoder.encode(game + "." + text));
-      return keyword && JSON.stringify(keyword).slice(1, -1) === text &&
-        recoveryIndex(fingerprint, bytes[0], Number(variant), space.capacity) === index ? keyword : null;
+      const fingerprint = hashText(game + "." + text, trace, "fingerprint");
+      const expected = recoveryIndex(fingerprint, bytes[0], Number(variant), space.capacity);
+      const valid = keyword && JSON.stringify(keyword).slice(1, -1) === text && expected === index;
+      if (trace) Object.assign(trace, { text, bytes, expected,
+        weight: OFFSETS[Number(variant)], keyword: valid ? keyword : null });
+      return valid ? keyword : null;
     } catch {
       return null;
     }
@@ -398,9 +454,22 @@ const ForceFit = (() => {
     return seedIndex("isaac", seed) !== null;
   }
 
+  function inspect(kind, game, seed, key = "", variant) {
+    const trace = { kind, game, variant };
+    if (kind === "packet") readPacket(game, seed, key, trace);
+    if (kind === "legacy") readLegacy(game, seed, trace);
+    if (kind === "recovery") {
+      readRecovery(seed, key, trace);
+      if (!trace.slot && needsRecovery(game, seed)) {
+        trace.slot = slotDetails(game, valheimRecovery, valheimRecovery.read(seed), seed);
+      }
+    }
+    return trace.slot ? trace : null;
+  }
+
   return {
     hasSpace, encodeVariants, readPacket, readLegacy, validIsaacSeed,
-    encodeRecovery, readRecovery, recoveryGame, needsRecovery
+    encodeRecovery, readRecovery, recoveryGame, needsRecovery, inspect
   };
 })();
 

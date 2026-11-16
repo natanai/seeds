@@ -99,6 +99,38 @@ test("the reported Valheim keyword decodes straight from each new seed", () => {
     "loving home");
 });
 
+test("the screenshot seeds expose different stored recipe IDs and preserve the trailing space", () => {
+  const backward = ForceFit.inspect("packet", "valheim", "!1gd3JFT00");
+  const forward = ForceFit.inspect("packet", "valheim", "!FOpoZjkTu");
+  assert.equal(backward.keyword, "november ");
+  assert.equal(forward.keyword, backward.keyword);
+  assert.equal(backward.text.ordered, " rebmevon");
+  assert.equal(forward.text.ordered, "november ");
+  assert.deepEqual([backward.number, forward.number], [3, 2]);
+  assert.deepEqual([backward.check, forward.check], [67n, 116n]);
+  for (const trace of [backward, forward]) {
+    assert.equal(trace.raw % trace.recipeCount, BigInt(trace.number));
+    assert.equal(trace.raw / trace.recipeCount + 1n, trace.position);
+    assert.equal(trace.check, trace.expected);
+    assert.equal(trace.packet, trace.raw * trace.checks + trace.check);
+    assert.equal(trace.packet, trace.slot.index);
+  }
+});
+
+test("inspection exposes the offset of an entered key and the bytes of a generated key", () => {
+  const keyed = ForceFit.inspect("packet", "valheim", "+sZRrICqlu", "love");
+  assert.equal(keyed.keyword, "cozy home");
+  assert.equal(keyed.keyHash.text, '["valheim","love"]');
+  assert.equal(keyed.shift, keyed.keyHash.hash % keyed.capacity);
+  assert.equal((keyed.packet + keyed.shift) % keyed.capacity, keyed.encoded);
+  const { key, seed } = ForceFit.encodeRecovery("lego", "00 (202) 555-0199")[3];
+  const split = ForceFit.inspect("recovery", "lego", seed, key);
+  assert.equal(split.keyword, "00 (202) 555-0199");
+  assert.equal(split.bytes[0], Number(split.slot.index % 256n));
+  assert.equal(split.expected, split.slot.index);
+  assert.equal(split.key, key);
+});
+
 test("a custom or generated key unlocks the exact keyword for the right seed", () => {
   for (const game of ["valheim", "going-medieval"]) {
     for (const key of ["love", "af0edc324a1b23f0"]) {
