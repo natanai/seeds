@@ -19,6 +19,7 @@
   const search = new URLSearchParams(location.search);
   const tabs = [...document.querySelectorAll("[data-tab]")];
   const collectionButtons = [...document.querySelectorAll("[data-collection]")];
+  const ENCODE_METHODS = { keyword: "Keyword seed", number: "Number code", fit: "Force fit" };
 
   function readStorage(key) {
     try {
@@ -51,7 +52,11 @@
   let game = validGame(search.get("game") ?? readStorage(gameKey));
   let view = search.has("seed") ? "decode" : "encode";
   let recovery = readSeedLink(location.href, location.href);
-  let encodeMethod = PRESETS[game].keyword ? "keyword" : "mtap";
+  let encodeMethod = firstEncodeMethod(game);
+  let encodeVariation;
+  let methodVariations = [];
+  let diceChoices = [];
+  const rolledSeeds = new Set();
   let decodeMethod = "game";
   let saved = readSaved();
   let collection = saved.some((entry) => game === "none" || entry.game === game)
@@ -90,11 +95,26 @@
     return recovery?.game === game && recovery.seed === seedInput.value ? recovery.keyword : undefined;
   }
 
+  function firstEncodeMethod(format) {
+    if (PRESETS[format].keyword) return "keyword";
+    return ForceFit.hasSpace(format) ? "fit" : "number";
+  }
+
+  function validateEncoding(value, preset) {
+    const error = preset.validate(value);
+    if (error) return error;
+    if (game === "isaac" && !ForceFit.validIsaacSeed(value)) return "This seed fails Isaac’s checksum.";
+    if (game === "spelunky2" && !/^[0-9A-F]{8}$/i.test(value)) return "Use eight hexadecimal digits.";
+    return "";
+  }
+
   function keywordCandidate(input, preset) {
     const { seed, prefix, suffix } = preset.keyword(input);
     const explainHash = "FNV-1a starts at 2166136261. For each UTF-8 byte, XOR it in, " +
       "multiply by 16777619 and keep the low 32 bits.";
-    const candidate = { id: "keyword", label: "Keyword seed", value: seed, error: "" };
+    const candidate = {
+      id: "game-keyword", method: "keyword", label: "Game rule", value: seed, error: "", exact: seed === input
+    };
 
     if (game === "valheim") {
       const rule = "One line of up to " + VALHEIM_LIMIT + " UTF-16 units goes in as typed. Otherwise keep " +
@@ -117,19 +137,13 @@
     return candidate;
   }
 
-  function fitCandidate(input, encoding) {
-    const candidate = { id: "fit", label: "Force fit", value: "", error: "" };
-    if (!encoding) {
-      const packed = ForceFit.decode(game, input);
-      candidate.value = packed?.keyword ?? "";
-      candidate.error = input && !packed ? "This seed does not match Force fit." : "";
-      candidate.hint = packed?.kind === "hash"
-        ? "Open this seed’s share link or saved entry to recover its keyword."
-        : "Force fit recovers keywords packed into the seed.";
-      return candidate;
-    }
+  function fitLabel(variant) {
+    return variant ? "Shift " + variant : "Standard";
+  }
 
-    const result = ForceFit.encode(game, input);
+  function fitCandidate(result) {
+    const variant = result?.variant ?? 0;
+    const candidate = { id: "fit-" + variant, method: "fit", label: fitLabel(variant), value: "", error: "" };
     const fitRule = "Try packing spaces and a–z first, then UTF-8 bytes. If the keyword exceeds both " +
       "capacities, use a deterministic game seed and keep its exact keyword in Save or Share.";
     if (!result) {
@@ -139,13 +153,15 @@
     }
 
     candidate.value = result.seed;
+    candidate.exact = result.kind !== "hash";
     const example = "Slot " + result.index;
+    const shift = result.offset ? "Add " + result.offset + " and wrap modulo " + result.slots + ". " : "";
     if (result.kind === "hash") {
       candidate.hint = "Save or share this seed to recover the exact keyword.";
       candidate.explanation = {
         rule: "The keyword exceeds the space for packed text. Start a 64-bit FNV-1a hash at " +
           "14695981039346656037. XOR each UTF-8 byte in, multiply by 1099511628211 and keep 64 bits.",
-        math: "Take the remainder modulo " + result.slots + ", then multiply by 3. " + result.format,
+        math: "Take (hash + " + result.offset + ") modulo " + result.slots + ", then multiply by 3. " + result.format,
         example
       };
       return candidate;
@@ -157,7 +173,7 @@
       rule: compact
         ? "Start at 0. For each symbol, multiply by 27 and add its position in space followed by a–z, counting from 1."
         : "Start at 0. For each UTF-8 byte, multiply by 256 and add the byte value plus 1.",
-      math: "Subtract 1 from the result, multiply by 3 and add " + (compact ? "1. " : "2. ") + result.format,
+      math: "Subtract 1. " + shift + "Multiply by 3 and add " + (compact ? "1. " : "2. ") + result.format,
       example
     };
     return candidate;
@@ -169,12 +185,19 @@
     const preset = PRESETS[game];
     const candidates = matchingMethods(game).map(([id, method]) => {
       const value = method[view](input);
-      const candidate = { id, label: method.label, value, error: "", hint: method.hint, reversible: Boolean(method.steps) };
+      const reversible = Boolean(method.steps);
+      const candidate = { id, label: method.label, value, error: "", hint: method.hint, reversible };
+      if (encoding) {
+        candidate.method = reversible ? "keyword" : "number";
+        candidate.explanation = { rule: method.steps ?? method.hint };
+      }
       if (!input) return candidate;
       if (encoding) {
-        candidate.error = value ? preset.validate(value) : "No characters usable with this method.";
-        if (value) candidate.hint = fitsPreset() || method.hint;
-        if (method.steps) candidate.explanation = { rule: method.steps };
+        candidate.error = value ? validateEncoding(value, preset) : "No characters usable with this method.";
+        if (value) {
+          candidate.hint = fitsPreset() || method.hint;
+          candidate.exact = !candidate.error && (reversible || method.decode(value) === input);
+        }
       } else if (!value) {
         candidate.error = method.invalid;
       } else {
@@ -183,9 +206,24 @@
       return candidate;
     });
 
-    if (ForceFit.hasSpace(game)) candidates.unshift(fitCandidate(input, encoding));
-    if (encoding && preset.keyword) candidates.unshift(keywordCandidate(input, preset));
-    if (!encoding) {
+    if (encoding) {
+      if (ForceFit.hasSpace(game)) {
+        const packed = ForceFit.encodeVariants(game, input);
+        candidates.unshift(...(packed.length ? packed.map(fitCandidate) : [fitCandidate()]));
+      }
+      candidates.unshift({
+        id: "as-typed", method: "keyword", label: "As typed", value: input,
+        error: input ? validateEncoding(input, preset) : "", exact: Boolean(input),
+        hint: input ? fitsPreset() : "Enter a keyword to use as a seed.",
+        explanation: { rule: "Use the keyword exactly as typed when it fits this game’s seed format." }
+      });
+      if (preset.keyword) candidates.unshift(keywordCandidate(input, preset));
+    } else {
+      const packed = ForceFit.decodeVariants(game, input).map(({ variant, keyword }) => ({
+        id: "fit-" + variant, label: "Force fit · " + fitLabel(variant), value: keyword,
+        packed: true, error: "", hint: "This keyword decodes with " + fitLabel(variant) + "."
+      }));
+      candidates.unshift(...packed);
       candidates.unshift({
         id: "game", label: "Game seed", value: input,
         error: input ? preset.validate(input) : "",
@@ -202,19 +240,77 @@
     return candidates;
   }
 
-  function setOptionLabels(candidates, selected) {
-    const choices = candidates.map(({ id, label, value, error }) => {
-      return { id, label: label + (value && !error ? " ✓" : "") };
-    });
+  function choiceKey(value) {
+    return (PRESETS[game].numeric || game === "minecraft") && /^-?\d+$/.test(value)
+      ? BigInt(value).toString() : value;
+  }
+
+  function distinctChoices(candidates) {
+    const unique = new Map();
+    for (const candidate of candidates) {
+      if (!candidate.value || candidate.error) continue;
+      const key = choiceKey(candidate.value);
+      const existing = unique.get(key);
+      if (!existing || (candidate.exact && !existing.exact)) unique.set(key, candidate);
+    }
+    return [...unique.values()];
+  }
+
+  function selectEncoding(candidates) {
+    const methods = new Set(candidates.map((candidate) => candidate.method));
+    const choices = Object.entries(ENCODE_METHODS).filter(([id]) => methods.has(id));
+    if (!methods.has(encodeMethod)) encodeMethod = choices[0][0];
+
     const optionsChanged = choices.length !== methodSelect.options.length ||
-      choices.some(({ id, label }, index) => {
+      choices.some(([id, label], index) => {
         const option = methodSelect.options[index];
         return option.value !== id || option.text !== label;
       });
     if (optionsChanged) {
-      methodSelect.replaceChildren(...choices.map(({ id, label }) => new Option(label, id)));
+      methodSelect.replaceChildren(...choices.map(([id, label]) => new Option(label, id)));
     }
-    methodSelect.value = selected;
+    methodSelect.value = encodeMethod;
+
+    const withinMethod = candidates.filter((candidate) => candidate.method === encodeMethod);
+    methodVariations = distinctChoices(withinMethod);
+    diceChoices = distinctChoices(candidates);
+    const previous = withinMethod.find((candidate) => candidate.id === encodeVariation && !candidate.error && candidate.value);
+    const selected = previous ?? methodVariations[0] ?? withinMethod[0];
+    encodeVariation = selected.id;
+    byId("next-variation").disabled = methodVariations.length < 2;
+    byId("choose-seed").disabled = !diceChoices.some((candidate) => choiceKey(candidate.value) !== choiceKey(selected.value));
+    return selected;
+  }
+
+  function showVariation(candidate) {
+    encodeMethod = candidate.method;
+    encodeVariation = candidate.id;
+    keywordInput.blur();
+    refresh();
+  }
+
+  function nextVariation() {
+    if (methodVariations.length < 2) return;
+    const current = choiceKey(currentResult.value);
+    const index = methodVariations.findIndex((candidate) => choiceKey(candidate.value) === current);
+    showVariation(methodVariations[(index + 1) % methodVariations.length]);
+  }
+
+  function chooseSeed() {
+    const current = choiceKey(currentResult.value);
+    const alternatives = diceChoices.filter((candidate) => choiceKey(candidate.value) !== current);
+    if (!alternatives.length) return;
+    rolledSeeds.add(current);
+    let pool = alternatives.filter((candidate) => !rolledSeeds.has(choiceKey(candidate.value)));
+    if (!pool.length) {
+      rolledSeeds.clear();
+      pool = alternatives;
+    }
+    const exact = pool.filter((candidate) => candidate.exact);
+    if (exact.length) pool = exact;
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+    rolledSeeds.add(choiceKey(chosen.value));
+    showVariation(chosen);
   }
 
   function readingsPerPage() {
@@ -230,7 +326,7 @@
     const list = byId("reading-list");
     const priority = ({ id, reversible }) => {
       if (id === "original") return 0;
-      if (id === "fit" && game === "valheim") return 1;
+      if (id === "fit-0" && game === "valheim") return 1;
       return reversible ? 2 : 3;
     };
     const readings = candidates.filter(({ id, value, error }) => id !== "game" && value && !error)
@@ -308,7 +404,8 @@
 
   function renderResult({
     value = "", label = "Seed", note = "", error = "", record = null, source,
-    showValue = true, seedActions = true, actions = true, explanation, allowRecovery = false
+    showValue = true, seedActions = true, actions = true, explanation, allowRecovery = false,
+    variation
   }) {
     currentResult = { value, record, showValue, explanation };
     byId("explain-method").hidden = !explanation;
@@ -318,7 +415,11 @@
     resultValue.value = value;
     resultStatus.textContent = error || note;
     resultStatus.dataset.invalid = String(Boolean(error));
-    resultStatus.parentElement.hidden = !error && !note && !source && !allowRecovery;
+    resultStatus.closest(".result-note").hidden = !error && !note && !source && !allowRecovery && !variation;
+    const variationName = byId("variation-name");
+    variationName.hidden = !variation;
+    variationName.textContent = variation ?? "";
+    byId("next-variation").hidden = !variation;
 
     const sourceLink = byId("source");
     sourceLink.hidden = !source;
@@ -373,12 +474,10 @@
 
     const encoding = view === "encode";
     const candidates = getCandidates();
-    const method = encoding ? encodeMethod : decodeMethod;
-    const { id, value, error, hint, explanation, label: methodLabel } =
-      candidates.find((candidate) => candidate.id === method) ?? candidates[0];
-    if (encoding) encodeMethod = id;
-    else decodeMethod = id;
-    if (encoding) setOptionLabels(candidates, id);
+    const selected = encoding ? selectEncoding(candidates)
+      : candidates.find((candidate) => candidate.id === decodeMethod) ?? candidates[0];
+    const { id, value, error, hint, explanation, label: methodLabel, packed } = selected;
+    if (!encoding) decodeMethod = id;
 
     const gameSeed = id === "game";
     if (gameSeed && seedInput.value) {
@@ -390,7 +489,7 @@
       byId("reading-detail").hidden = false;
       byId("reading-method").textContent = methodLabel;
     }
-    const exact = !encoding && (id === "original" || id === "fit");
+    const exact = !encoding && (id === "original" || packed);
     const seedActions = encoding || gameSeed || (exact && Boolean(value));
     const inputMode = !encoding && seedActions && PRESETS[game].numeric ? "numeric" : "text";
     if (seedInput.inputMode !== inputMode) seedInput.inputMode = inputMode;
@@ -405,6 +504,7 @@
     }
     renderResult({
       value, error, note: hint, record, seedActions, label, explanation,
+      variation: encoding ? methodLabel : undefined,
       showValue: !gameSeed && (!exact || Boolean(value))
     });
   }
@@ -430,7 +530,9 @@
     if (game !== record.game) {
       game = record.game;
       gameSelect.value = game;
-      encodeMethod = PRESETS[game].keyword ? "keyword" : "mtap";
+      encodeMethod = firstEncodeMethod(game);
+      encodeVariation = undefined;
+      rolledSeeds.clear();
       libraryIndex = 0;
     }
     recovery = record;
@@ -597,7 +699,9 @@
   gameSelect.addEventListener("change", () => {
     game = gameSelect.value;
     recovery = null;
-    encodeMethod = PRESETS[game].keyword ? "keyword" : "mtap";
+    encodeMethod = firstEncodeMethod(game);
+    encodeVariation = undefined;
+    rolledSeeds.clear();
     decodeMethod = "game";
     readingPage = 0;
     libraryIndex = 0;
@@ -605,6 +709,8 @@
     refresh();
   });
   byId("explain-method").addEventListener("click", explainMethod);
+  byId("choose-seed").addEventListener("click", chooseSeed);
+  byId("next-variation").addEventListener("click", nextVariation);
   byId("recover-saved").addEventListener("click", () => openSeed(currentResult.record, true));
   byId("reading-previous").addEventListener("click", () => { readingPage--; refresh(); });
   byId("reading-next").addEventListener("click", () => { readingPage++; refresh(); });
@@ -615,8 +721,8 @@
   });
 
   methodSelect.addEventListener("change", () => {
-    if (view === "encode") encodeMethod = methodSelect.value;
-    if (view === "decode") decodeMethod = methodSelect.value;
+    encodeMethod = methodSelect.value;
+    encodeVariation = undefined;
     refresh();
   });
 
@@ -633,7 +739,10 @@
       refresh();
     });
   }
-  keywordInput.addEventListener("input", refresh);
+  keywordInput.addEventListener("input", () => {
+    rolledSeeds.clear();
+    refresh();
+  });
   seedInput.addEventListener("input", () => {
     const entry = readSeedLink(seedInput.value, location.href);
     if (entry) {
@@ -671,6 +780,7 @@
   byId("use-keyword").addEventListener("click", () => {
     finishTap();
     keywordInput.value = phoneKeyword;
+    rolledSeeds.clear();
     navigate("encode");
   });
   window.addEventListener("storage", (event) => {
