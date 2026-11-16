@@ -192,7 +192,7 @@ const SeedTools = (() => {
 
   const METHODS = {
     mtap: {
-      label: "Multi-tap",
+      label: "Phone key repeats",
       encode: encodeMultiTap,
       decode: decodeMultiTap,
       hint: "Replace letters with repeated phone keys. A zero marks a space or separates letters on the same key.",
@@ -206,25 +206,25 @@ const SeedTools = (() => {
       invalid: "Use a key and a valid tap count for each letter."
     },
     fixed: {
-      label: "A1Z26 fixed",
+      label: "Two digits per letter",
       encode: (text) => encodeAlphabet(text, ""),
       decode: decodeAlphabetFixed,
-      hint: "Two digits per letter, from 01 to 26.",
+      hint: "Replace each letter with its place in the alphabet. A becomes 01 and Z becomes 26.",
       invalid: "Use pairs of digits from 01 to 26."
     },
     separated: {
-      label: "A1Z26 separated",
+      label: "Letter numbers with dashes",
       usesSeparators: true,
       encode: (text) => encodeAlphabet(text, "-"),
       decode: decodeAlphabetSeparated,
-      hint: "Alphabet positions with separators. SEED = 19-5-5-4.",
+      hint: "Replace letters with their alphabet positions and put dashes between them. SEED becomes 19-5-5-4.",
       invalid: "Use tokens from 1 to 26 separated by hyphens or spaces."
     },
     base36: {
-      label: "Base 36",
+      label: "Letters as digits",
       encode: encodeBase36,
       decode: decodeBase36,
-      hint: "Read the letters and digits as a base-36 number and write it in decimal.",
+      hint: "Read letters as extra digits, with A after 9. Then write that number in ordinary digits.",
       invalid: "Use a decimal integer."
     },
     upperLookalikes: reversibleMethod("Look-alikes (A↔4)",

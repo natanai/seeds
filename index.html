@@ -33,6 +33,7 @@
           <div class="input-row">
             <input id="keyword" class="entry" type="text" placeholder="e.g. moss home"
               autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+            <button id="encode-key" type="button" aria-haspopup="dialog">Key</button>
             <button class="done" type="button" data-done="keyword">Done</button>
           </div>
         </section>
@@ -42,6 +43,7 @@
           <div class="input-row">
             <input id="seed-input" class="entry" type="text" placeholder="Paste a seed or share link"
               autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+            <button id="decode-key" type="button" aria-haspopup="dialog">Key</button>
             <button id="roll" type="button" hidden>Roll</button>
             <button class="done" type="button" data-done="seed-input">Done</button>
           </div>
@@ -146,8 +148,22 @@
         <form method="dialog"><button>Close</button></form>
       </header>
       <p id="method-rule"></p>
-      <p id="method-math"></p>
+      <p id="method-detail"></p>
       <code id="method-example" hidden></code>
+    </dialog>
+    <dialog id="key-dialog" aria-labelledby="key-title">
+      <h2 id="key-title">Secret key</h2>
+      <form id="key-form" method="dialog">
+        <label class="sr-only" for="key-input">Secret key</label>
+        <input id="key-input" class="entry" type="text" placeholder="Type a key"
+          autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+        <p id="key-note" class="hint" role="status"></p>
+        <div class="key-actions">
+          <button id="generate-key" type="button">Generate key</button>
+          <button id="copy-key" type="button">Copy key</button>
+          <button type="submit">Done</button>
+        </div>
+      </form>
     </dialog>
     <noscript>Enable JavaScript to use the seed tools.</noscript>
   </div>
