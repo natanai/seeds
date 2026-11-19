@@ -298,7 +298,7 @@
   }
 
   function renderTrace() {
-    const { title, note, rows } = tracePages[traceIndex];
+    const { title, note, rows, source } = tracePages[traceIndex];
     byId("trace-title").textContent = title;
     byId("trace-note").textContent = note;
     const values = rows.flatMap(([name, value]) => {
@@ -311,6 +311,7 @@
       return [term, description];
     });
     byId("trace-rows").replaceChildren(...values);
+    byId("trace-source").href = source;
     byId("trace-body").scrollTop = 0;
     byId("trace-prev").disabled = traceIndex === 0;
     byId("trace-next").disabled = traceIndex >= tracePages.length - 1;
@@ -330,7 +331,9 @@
     traceIndex = 0;
     byId("method-title").textContent = label;
     const source = kind ? "packed-text.js" : "seed-core.js";
-    byId("trace-source").href = document.querySelector('script[src^="' + source + '"]').src;
+    const sourceUrl = document.querySelector('script[src^="' + source + '"]').src;
+    tracePages = [...tracePages, ...(PRESETS[game].guide ?? [])]
+      .map((page) => ({ source: sourceUrl, ...page }));
     renderTrace();
     byId("method-dialog").showModal();
   }

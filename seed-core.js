@@ -248,6 +248,36 @@ const SeedTools = (() => {
       allowsLetters: true,
       roll: valheimRoll
     },
+    bannerlord: {
+      label: "Bannerlord",
+      validate: unsigned32,
+      numeric: true,
+      roll: (random) => String(random.getRandomValues(new Uint32Array(1))[0]),
+      guide: [
+        {
+          title: "Bannerlord Sandbox",
+          note: "Paste the seed into Sandbox → Advanced Starting Options → Seed.",
+          rows: [
+            ["Availability", "Advanced Starting Options in Bannerlord v1.5.7 on PC."],
+            ["Seed effects", "Randomizes campaign setup and player-start details within the selected options."],
+            ["Recreate a start", "Match the seed and all Advanced Starting Options, including the scenario, its settings, player start, and modifiers."],
+            ["War Sails", "The same seed field works with the expansion’s additional scenarios and starts."]
+          ],
+          source: "https://www.taleworlds.com/en/News/611"
+        },
+        {
+          title: "Bannerlord seed format",
+          note: "The game registers Seed as a UIntAdvancedStartOption with minimum 0 and maximum uint.MaxValue.",
+          rows: [
+            ["Valid values", "0–4294967295, inclusive (2³² possible seeds)."],
+            ["Input", "Decimal digits 0–9. No minus sign, spaces, or punctuation."],
+            ["Leading zeros", "Stored as the same number. Encode rejects methods that would lose meaningful leading zeros or spaces."],
+            ["Encoding and decoding", "Every seed comes from the selected translation. Decode lists possible interpretations and groupings."]
+          ],
+          source: "https://github.com/Sartiye/Bannerlord-Taleworlds-Assembly-Decompiled-Archive/blob/73c6a78f7f7f608235d11e49eeb04e6651dc6aca/SandBox.View/SandBox.View.AdvancedStartOptions/SandBoxStartOptionsProvider.cs"
+        }
+      ]
+    },
     "going-medieval": {
       label: "Going Medieval",
       validate: unsigned32,

@@ -120,6 +120,7 @@ const PackedText = (() => {
   const positive31 = decimalSpace(1n, 2147483647n);
   const spaces = {
     valheim: alphabetSpace(BASE62, 10, 1),
+    bannerlord: unsigned32,
     "going-medieval": unsigned32,
     lego: positive31,
     midjourney: unsigned32,
