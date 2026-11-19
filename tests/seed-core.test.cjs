@@ -114,6 +114,48 @@ test("Going Medieval supports unsigned seed values", () => {
   assert.equal(accepts("going-medieval", "-1"), false);
 });
 
+test("Bannerlord accepts the full unsigned 32-bit seed field and reports invalid values", () => {
+  for (const value of ["0", "2147483648", "4294967295"]) assert.ok(accepts("bannerlord", value), value);
+  for (const value of ["", "-1", "+1", "1 2", "1.5", "Nat", "🌿", "4294967296"]) {
+    assert.equal(accepts("bannerlord", value), false, value);
+  }
+  assert.match(PRESETS.bannerlord.validate("4294967296"), /4294967296 exceeds.*4294967295/);
+  assert.equal(canonicalSeed("bannerlord", "00056"), "56");
+  assert.match(inspectEncodings("bannerlord", "00056").failures.find(({ id }) => id === "literal").reason,
+    /stores "00056" as "56"/);
+  const roll = (value) => PRESETS.bannerlord.roll({ getRandomValues: (values) => values.fill(value) });
+  assert.equal(roll(0), "0");
+  assert.equal(roll(4294967295), "4294967295");
+});
+
+test("Bannerlord encodes meaningful keywords without markers and exposes possible originals", () => {
+  for (const [keyword, id, value] of [
+    ["Nat", "alphabet", "14120"],
+    ["Nat", "mtap", "6628"],
+    ["Nat", "pair", "622181"],
+    ["Nat", "base36", "30197"],
+    ["Nat", "packed-4", "5202548"],
+    ["cozy home", "packed-0", "10446"],
+    ["loving kindness", "packed-0", "1494"],
+    ["2025550199", "literal", "2025550199"],
+    ["SEAT", "upperLookalikes", "5347"],
+    ["🌿", "packed-4", "4053831103"]
+  ]) {
+    const choice = inspectEncodings("bannerlord", keyword).choices.find((entry) => entry.id === id);
+    assert.equal(choice?.value, value, keyword + "/" + id);
+    assert.match(value, /^\d+$/);
+    assert.ok(accepts("bannerlord", value));
+    const method = METHODS[id];
+    const readings = read("bannerlord", value).filter((reading) => choice.family === "packed"
+      ? reading.kind === "packed" && reading.variant === choice.variant : reading.method === id);
+    assert.ok(readings.some((reading) => matchesReading(method, reading.value, keyword)), keyword + "/" + id);
+  }
+  const tooLong = inspectEncodings("bannerlord", "Amélie and the long road home 555-0199");
+  assert.deepEqual(tooLong.choices, []);
+  assert.ok(tooLong.failures.every(({ reason }) => reason));
+  assert.equal(matchingMethods("bannerlord").some(([id]) => id === "flipCase"), false);
+});
+
 test("method choices follow the preset’s seed syntax", () => {
   for (const game of Object.keys(PRESETS)) {
     const methods = matchingMethods(game).map(([id]) => id);
@@ -125,7 +167,7 @@ test("method choices follow the preset’s seed syntax", () => {
 });
 
 test("numeric games use the same unpadded alphabet positions", () => {
-  for (const game of ["going-medieval", "lego", "midjourney", "minecraft", "factorio"]) {
+  for (const game of ["bannerlord", "going-medieval", "lego", "midjourney", "minecraft", "factorio"]) {
     const entry = inspectEncodings(game, "ab").choices.find(({ id }) => id === "alphabet");
     assert.equal(entry.value, "12");
     assert.ok(read(game, "12").some(({ method, value }) => method === "alphabet" && value === "ab"));
@@ -254,10 +296,10 @@ test("rotating a keyword reverses exactly, including spaces and emoji", () => {
   assert.equal(METHODS.rotate.decode(rotated), keyword);
 });
 
-test("both roll methods return seeds accepted by their game formats", () => {
+test("roll methods return seeds accepted by their game formats", () => {
   const random = { getRandomValues: (values) => values.fill(4294967295) };
   assert.match(PRESETS.valheim.roll(random), /^[A-Za-z0-9]{10}$/);
-  for (const game of ["valheim", "going-medieval"]) {
+  for (const game of ["valheim", "bannerlord", "going-medieval"]) {
     assert.ok(accepts(game, PRESETS[game].roll(random)));
   }
 });
